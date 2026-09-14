@@ -1,6 +1,27 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<script>
+(function(){
+    if (window._cpReadOnlyGuardInstalled) return;
+    window._cpReadOnlyGuardInstalled = true;
+    var _cpOrigSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+        if (this === window.localStorage && key !== 'covo_current_user') {
+            try {
+                var cu = JSON.parse(window.localStorage.getItem('covo_current_user') || 'null');
+                if (cu && cu.readOnly === true) {
+                    if (typeof window.showScanToast === 'function') {
+                        window.showScanToast('👁️ Mode consultation seule — sauvegarde désactivée par l\'Admin-Développeur', 'info');
+                    }
+                    return;
+                }
+            } catch(e) {}
+        }
+        return _cpOrigSetItem.apply(this, arguments);
+    };
+})();
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
 <title>Investissement Pro — COVO</title>
@@ -70,13 +91,27 @@
 </head>
 <body>
 
+<div id="cp-access-gate" style="display:none;position:fixed;inset:0;z-index:100000;background:#0a0a0a;color:#fff;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;gap:16px;">
+    <div style="font-size:3rem;">🔒</div>
+    <div id="cp-access-gate-title" style="font-size:1.2rem;font-weight:900;"></div>
+    <div id="cp-access-gate-msg" style="font-size:0.9rem;color:#ccc;max-width:420px;line-height:1.5;"></div>
+    <a id="cp-access-gate-link" href="https://aliand0810.github.io/Covo-pro/" target="covopro" style="display:none;text-decoration:none;background:linear-gradient(135deg,#4c1d95,#2f115c);color:#fff;padding:10px 22px;border-radius:9px;font-weight:800;font-size:0.9rem;">🔑 Se connecter dans COVO Pro</a>
+</div>
+
 <div id="cp-topbar">
-    <a class="cp-back" href="https://aliand0810.github.io/Covo-pro/">← COVO Pro</a>
+    <a class="cp-back" href="https://aliand0810.github.io/Covo-pro/" target="covopro">← COVO Pro</a>
     <div class="cp-title">💼 Investissement Pro<small>Achats & fournisseurs — données partagées avec COVO Pro</small></div>
     <span id="cp-user-badge">👤 —</span>
     <button id="cp-drive-pill" onclick="cpToggleDrivePanel()">☁️ Google Drive</button>
     <button id="cp-install-btn" class="cp-back" style="display:none;border:1.5px solid var(--border-color);" onclick="cpInstallClick()" title="Installer l'application">📲 Installer</button>
     <button id="cp-dark-toggle" onclick="cpToggleDark()">🌙</button>
+</div>
+<div id="cp-install-banner" style="display:none;position:sticky;top:0;z-index:9999;background:linear-gradient(135deg,#4c1d95,#2f115c);color:#fff;padding:10px 16px;align-items:center;justify-content:center;gap:14px;font-weight:600;font-size:0.85rem;flex-wrap:wrap;text-align:center;">
+    <span>📲 Installez Investissement Pro pour l'ouvrir directement comme une application, en un clic.</span>
+    <span style="display:inline-flex;gap:8px;">
+        <button onclick="cpInstallClick()" style="background:#fff;color:#2f115c;border:none;border-radius:6px;padding:6px 14px;font-weight:800;cursor:pointer;font-size:0.82rem;">Installer maintenant</button>
+        <button onclick="cpDismissInstallBanner()" title="Fermer" style="background:transparent;color:#fff;border:1.5px solid rgba(255,255,255,0.5);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:0.82rem;">✕</button>
+    </span>
 </div>
 <div id="cp-login-banner" style="display:none;">⚠️ Aucune session COVO Pro détectée — les actions Modifier/Supprimer sont réservées aux administrateurs connectés. Connectez-vous d'abord dans COVO Pro.</div>
 
@@ -531,18 +566,44 @@ function cpIsAdmin() {
     return !!(u && (u.role === 'admin' || u.isMaster || u.id === 'USR-MASTER'));
 }
 
+function cpShowAccessGate(title, msg, showLink){
+    var gate = document.getElementById('cp-access-gate');
+    if (!gate) return;
+    var t = document.getElementById('cp-access-gate-title'); if (t) t.textContent = title;
+    var m = document.getElementById('cp-access-gate-msg'); if (m) m.textContent = msg;
+    var link = document.getElementById('cp-access-gate-link'); if (link) link.style.display = showLink ? 'inline-block' : 'none';
+    gate.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+function cpHideAccessGate(){
+    var gate = document.getElementById('cp-access-gate');
+    if (!gate) return;
+    gate.style.display = 'none';
+    document.body.style.overflow = '';
+}
+function cpCheckAccess(){
+    if (cpIsAdmin()) { cpHideAccessGate(); return true; }
+    if (!currentUser) {
+        cpShowAccessGate('🔒 Connexion requise', "Connectez-vous avec un compte administrateur dans COVO Pro avant d'utiliser Investissement Pro.", true);
+    } else {
+        cpShowAccessGate('⛔ Accès réservé aux administrateurs', "Investissement Pro est réservée aux comptes administrateurs. Connectez-vous avec un compte admin dans COVO Pro.", true);
+    }
+    return false;
+}
+
 function cpRefreshUserBadge() {
     currentUser = _covoCurrentUser();
     var badge = document.getElementById('cp-user-badge');
     var banner = document.getElementById('cp-login-banner');
     if (currentUser) {
-        badge.textContent = '👤 ' + (currentUser.name || currentUser.username || currentUser.id) + (cpIsAdmin() ? ' · admin' : '');
+        badge.textContent = '👤 ' + (currentUser.name || currentUser.username || currentUser.id) + (cpIsAdmin() ? ' · admin' : '') + (currentUser.readOnly ? ' · 👁️ lecture seule' : '');
         banner.style.display = 'none';
     } else {
         badge.textContent = '👤 Non connecté';
         banner.style.display = '';
     }
     document.querySelectorAll('.cp-admin-only').forEach(function(el){ el.style.display = cpIsAdmin() ? '' : 'none'; });
+    cpCheckAccess();
 }
 
 function cpToggleDark() {
@@ -2904,8 +2965,9 @@ function _cpApplyRestore(data) {
         e.preventDefault();
         window._cpDeferredPrompt = e;
         if (btn) btn.style.display = '';
+        if (typeof window.cpMaybeShowInstallBanner === 'function') window.cpMaybeShowInstallBanner();
     });
-    window.addEventListener('appinstalled', function() { if (btn) btn.style.display = 'none'; showScanToast('✅ Application installée', 'success'); });
+    window.addEventListener('appinstalled', function() { if (btn) btn.style.display = 'none'; var bn = document.getElementById('cp-install-banner'); if (bn) bn.style.display = 'none'; showScanToast('✅ Application installée', 'success'); });
 })();
 
 window.cpInstallClick = function() {
@@ -2917,6 +2979,20 @@ window.cpInstallClick = function() {
     } else {
         showScanToast('📲 Menu du navigateur → "Installer l\'application" (ou icône ⊕ dans la barre d\'adresse)', 'info');
     }
+};
+
+window.cpDismissInstallBanner = function(){
+    var b = document.getElementById('cp-install-banner'); if (b) b.style.display = 'none';
+    try { localStorage.setItem('covo_pwa_dismiss_investissementpro', '1'); } catch(e) {}
+};
+
+window.cpMaybeShowInstallBanner = function(){
+    var b = document.getElementById('cp-install-banner');
+    if (!b) return;
+    var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    var dismissed = false;
+    try { dismissed = localStorage.getItem('covo_pwa_dismiss_investissementpro') === '1'; } catch(e) {}
+    b.style.display = (!isStandalone && !dismissed && window._cpDeferredPrompt) ? 'flex' : 'none';
 };
 
 // ── Initialisation ────────────────────────────────────────────────────────
