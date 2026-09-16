@@ -283,7 +283,10 @@
       </div>
       <!-- Lien produit catalogue -->
       <div style="background:rgba(155,89,182,0.06);border:1.5px solid rgba(155,89,182,0.25);border-radius:9px;padding:10px 12px;">
-        <label style="font-size:0.72rem;font-weight:700;color:#8e44ad;text-transform:uppercase;display:block;margin-bottom:6px;">&#x1f517; Lier &#xe0; un produit du catalogue (optionnel)</label>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">
+          <label style="font-size:0.72rem;font-weight:700;color:#8e44ad;text-transform:uppercase;">&#x1f517; Lier &#xe0; un produit du catalogue (optionnel)</label>
+          <button type="button" onclick="window.invOpenNewProductModal()" title="Le produit recherché n'existe pas encore ? Ajoutez-le au catalogue." style="flex-shrink:0;padding:4px 10px;border:1.5px solid #8e44ad;border-radius:14px;background:transparent;color:#8e44ad;font-size:0.68rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#x2795; Nouveau produit</button>
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
           <div>
             <input id="inv-m-barcode" placeholder="&#x1f4f7; Code-barres..." oninput="window.invMBarcodeInput()" style="width:100%;padding:9px 12px;border:1.5px solid var(--border-color,#e0e0e0);border-radius:8px;font-size:0.85rem;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);">
@@ -392,6 +395,52 @@
     <div style="padding:12px 22px;border-top:1px solid var(--border-color,#eee);display:flex;gap:8px;flex-shrink:0;">
       <button onclick="document.getElementById('inv-add-modal').style.display='none'" style="flex:1;padding:10px;border:1.5px solid #ddd;border-radius:8px;background:#fff;color:#2c3e50;font-weight:700;cursor:pointer;">Annuler</button>
       <button onclick="window.invModalSubmit()" style="flex:2;padding:10px;border:none;border-radius:8px;background:linear-gradient(135deg,#9b59b6,#8e44ad);color:white;font-weight:800;cursor:pointer;font-size:0.92rem;">&#x2705; Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modale "Nouveau produit" — ouverte depuis le lien produit du catalogue de la modale Nouvel
+     Achat, quand l'article recherché n'existe pas encore dans covo_products (catalogue partagé). -->
+<div role="dialog" aria-modal="true" id="inv-newprod-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(6px);z-index:20700;justify-content:center;align-items:center;padding:16px;">
+  <div style="background:var(--bg-card,#fff);border-radius:14px;width:100%;max-width:420px;box-shadow:0 24px 64px rgba(0,0,0,0.45);overflow:hidden;">
+    <div style="background:linear-gradient(135deg,#9b59b6,#8e44ad);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;">
+      <div style="color:#fff;font-weight:800;font-size:0.95rem;">&#x2795; Nouveau produit au catalogue</div>
+      <button onclick="window.invCloseNewProductModal()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:0.95rem;">&#x2715;</button>
+    </div>
+    <div style="padding:18px 20px;display:flex;flex-direction:column;gap:10px;">
+      <div>
+        <label style="font-size:0.72rem;font-weight:700;color:var(--gray,#7f8c8d);text-transform:uppercase;display:block;margin-bottom:4px;">Nom *</label>
+        <input id="inv-np-name" placeholder="Nom du produit" style="width:100%;padding:9px 12px;border:1.5px solid var(--border-color,#e0e0e0);border-radius:8px;font-size:0.85rem;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div>
+          <label style="font-size:0.72rem;font-weight:700;color:var(--gray,#7f8c8d);text-transform:uppercase;display:block;margin-bottom:4px;">Cat&#xe9;gorie</label>
+          <select id="inv-np-cat" style="width:100%;padding:9px 10px;border:1.5px solid var(--border-color,#e0e0e0);border-radius:8px;font-size:0.85rem;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);"></select>
+        </div>
+        <div>
+          <label style="font-size:0.72rem;font-weight:700;color:var(--gray,#7f8c8d);text-transform:uppercase;display:block;margin-bottom:4px;">Unit&#xe9;</label>
+          <select id="inv-np-unit" style="width:100%;padding:9px 10px;border:1.5px solid var(--border-color,#e0e0e0);border-radius:8px;font-size:0.85rem;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);">
+            <option value="unit">&#xc0; l'unit&#xe9;</option>
+            <option value="kg">Au poids (kg)</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div>
+          <label style="font-size:0.72rem;font-weight:700;color:var(--gray,#7f8c8d);text-transform:uppercase;display:block;margin-bottom:4px;">Prix de vente (&#x20ac;) *</label>
+          <input id="inv-np-price" type="number" min="0" step="0.01" placeholder="0.00" style="width:100%;padding:9px 12px;border:1.5px solid var(--border-color,#e0e0e0);border-radius:8px;font-size:0.85rem;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);">
+        </div>
+        <div>
+          <label style="font-size:0.72rem;font-weight:700;color:var(--gray,#7f8c8d);text-transform:uppercase;display:block;margin-bottom:4px;">Code-barres</label>
+          <input id="inv-np-barcode" placeholder="Optionnel" style="width:100%;padding:9px 12px;border:1.5px solid var(--border-color,#e0e0e0);border-radius:8px;font-size:0.85rem;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);">
+        </div>
+      </div>
+      <div id="inv-np-error" style="font-size:0.76rem;color:#e74c3c;min-height:14px;"></div>
+      <div style="font-size:0.72rem;color:var(--gray,#999);">Le stock initial sera de 0 — il sera mis à jour automatiquement à l'enregistrement de cet achat.</div>
+    </div>
+    <div style="padding:12px 20px;border-top:1px solid var(--border-color,#eee);display:flex;gap:8px;">
+      <button onclick="window.invCloseNewProductModal()" style="flex:1;padding:10px;border:1.5px solid #ddd;border-radius:8px;background:#fff;color:#2c3e50;font-weight:700;cursor:pointer;">Annuler</button>
+      <button onclick="window.invCreateProductFromPurchase()" style="flex:2;padding:10px;border:none;border-radius:8px;background:linear-gradient(135deg,#9b59b6,#8e44ad);color:#fff;font-weight:800;cursor:pointer;font-size:0.88rem;">&#x2795; Cr&#xe9;er et lier &#xe0; cet achat</button>
     </div>
   </div>
 </div>
@@ -983,6 +1032,9 @@ window.invMPopulateProductSelect = function() {
         var label = (p.name || 'Sans nom') + (p.barcode ? '  \u00b7  #' + p.barcode : '') + '  (stock: ' + (p.stock != null ? p.stock : 0) + ')';
         return '<option value="' + p.id + '">' + label.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</option>';
     }).join('');
+    // Option toujours pr\u00e9sente en fin de liste : si l'article recherch\u00e9 n'existe pas dans le
+    // catalogue, on peut l'y ajouter directement depuis ici (voir invOpenNewProductModal).
+    opts += '<option value="__new__">\u2795 Cr\u00e9er un nouveau produit\u2026</option>';
     sel.innerHTML = opts;
 };
 
@@ -993,7 +1045,7 @@ function _invMShowProductInfo(product, notFound) {
         info.innerHTML = '\u2705 <strong>' + product.name + '</strong>' + (product.barcode ? ' \u00b7 #' + product.barcode : '') + ' \u00b7 stock actuel : <strong>' + (product.stock != null ? product.stock : 0) + '</strong>';
         info.style.color = '#27ae60';
     } else if (notFound) {
-        info.innerHTML = '\u26a0\ufe0f Aucun produit avec ce code-barres';
+        info.innerHTML = '\u26a0\ufe0f Aucun produit avec ce code-barres \u2014 <a href="javascript:void(0)" onclick="window.invOpenNewProductModal()" style="color:#8e44ad;font-weight:800;text-decoration:underline;">\u2795 Cr\u00e9er ce produit</a>';
         info.style.color = '#e67e22';
     } else {
         info.innerHTML = '';
@@ -1029,6 +1081,11 @@ window.invMProductSelect = function() {
     var sel = document.getElementById('inv-m-produit');
     var val = sel ? sel.value : '';
     var bcEl = document.getElementById('inv-m-barcode');
+    if (val === '__new__') {
+        if (sel) sel.value = window._invMLinkedProductId ? String(window._invMLinkedProductId) : '';
+        window.invOpenNewProductModal();
+        return;
+    }
     if (!val) {
         window._invMLinkedProductId = null;
         if (bcEl) bcEl.value = '';
@@ -1043,6 +1100,96 @@ window.invMProductSelect = function() {
         var descEl = document.getElementById('inv-m-desc');
         if (descEl && !descEl.value.trim()) descEl.value = match.name;
     }
+};
+
+// ============================================================================
+// CRÉATION RAPIDE D'UN PRODUIT MANQUANT — depuis la modale Nouvel Achat, quand
+// l'article recherché n'existe pas encore dans le catalogue partagé (covo_products).
+// Le produit créé est immédiatement lié à l'achat en cours ; son stock initial est 0,
+// mis à jour ensuite par le mécanisme habituel (_invApplyStockIn) à l'enregistrement.
+// ============================================================================
+window.invOpenNewProductModal = function() {
+    var modal = document.getElementById('inv-newprod-modal');
+    if (!modal) return;
+    var errEl = document.getElementById('inv-np-error');
+    if (errEl) errEl.textContent = '';
+    var nameEl = document.getElementById('inv-np-name');
+    if (nameEl) {
+        var descVal = (document.getElementById('inv-m-desc') || {}).value || '';
+        nameEl.value = descVal.trim();
+    }
+    var bcSrcEl = document.getElementById('inv-m-barcode');
+    var bcDstEl = document.getElementById('inv-np-barcode');
+    if (bcDstEl) bcDstEl.value = bcSrcEl ? (bcSrcEl.value || '').trim() : '';
+    var priceEl = document.getElementById('inv-np-price');
+    if (priceEl) priceEl.value = '';
+    var unitEl = document.getElementById('inv-np-unit');
+    if (unitEl) unitEl.value = (window._invMSelectedUnit === 'kg') ? 'kg' : 'unit';
+    var catEl = document.getElementById('inv-np-cat');
+    if (catEl) {
+        var cats = [];
+        try { cats = JSON.parse(localStorage.getItem('covo_categories')) || []; } catch(e) {}
+        catEl.innerHTML = '<option value="">— Non classé —</option>' + cats.map(function(c) {
+            var label = String(c).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return '<option value="' + label + '">' + label + '</option>';
+        }).join('');
+    }
+    modal.style.display = 'flex';
+    if (nameEl) setTimeout(function(){ nameEl.focus(); }, 50);
+};
+
+window.invCloseNewProductModal = function() {
+    var modal = document.getElementById('inv-newprod-modal');
+    if (modal) modal.style.display = 'none';
+    var sel = document.getElementById('inv-m-produit');
+    if (sel && sel.value === '__new__') sel.value = window._invMLinkedProductId ? String(window._invMLinkedProductId) : '';
+};
+
+window.invCreateProductFromPurchase = function() {
+    var errEl = document.getElementById('inv-np-error');
+    var name = (document.getElementById('inv-np-name').value || '').trim();
+    if (!name) { if (errEl) errEl.textContent = '❌ Le nom du produit est obligatoire.'; return; }
+    var priceRaw = parseFloat(document.getElementById('inv-np-price').value);
+    if (isNaN(priceRaw) || priceRaw < 0) { if (errEl) errEl.textContent = '❌ Prix de vente invalide.'; return; }
+    var unitType = document.getElementById('inv-np-unit').value === 'kg' ? 'kg' : 'unit';
+    var barcode = (document.getElementById('inv-np-barcode').value || '').trim();
+    var category = document.getElementById('inv-np-cat').value || '';
+
+    var products = _invMLoadProducts();
+    if (barcode && products.some(function(p){ return p.barcode && String(p.barcode).trim() === barcode; })) {
+        if (errEl) errEl.textContent = '❌ Ce code-barres est déjà utilisé par un autre produit.';
+        return;
+    }
+    var newProd = {
+        id: Date.now(),
+        name: name,
+        price: unitType === 'kg' ? null : priceRaw,
+        pricePerKg: unitType === 'kg' ? priceRaw : null,
+        unitType: unitType,
+        barcode: barcode,
+        stock: 0,
+        category: category,
+        promo: 0,
+        img: '',
+        active: true,
+        dateCreated: new Date().toISOString()
+    };
+    products.push(newProd);
+    localStorage.setItem('covo_products', JSON.stringify(products));
+    if (typeof cpDriveMarkDirty === 'function') cpDriveMarkDirty();
+
+    window.invMPopulateProductSelect();
+    var sel = document.getElementById('inv-m-produit');
+    if (sel) sel.value = String(newProd.id);
+    window._invMLinkedProductId = newProd.id;
+    var bcEl = document.getElementById('inv-m-barcode');
+    if (bcEl) bcEl.value = barcode;
+    _invMShowProductInfo(newProd, false);
+    var descEl = document.getElementById('inv-m-desc');
+    if (descEl && !descEl.value.trim()) descEl.value = newProd.name;
+
+    window.invCloseNewProductModal();
+    if (typeof showScanToast === 'function') showScanToast('✅ Produit "' + name + '" ajouté au catalogue et lié à cet achat', 'success');
 };
 
 // Applique la quantité entrante au stock du produit lié (covo_products) + historique
