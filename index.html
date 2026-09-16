@@ -1193,7 +1193,7 @@ window.invCreateProductFromPurchase = function() {
 };
 
 // Applique la quantité entrante au stock du produit lié (covo_products) + historique
-window._invApplyStockIn = function(productId, qteDelta, unitType, numero, desc) {
+window._invApplyStockIn = function(productId, qteDelta, unitType, numero, desc, costPrice) {
     try {
         var products = _invMLoadProducts();
         var idx = products.findIndex(function(p) { return String(p.id) === String(productId); });
@@ -1203,6 +1203,13 @@ window._invApplyStockIn = function(productId, qteDelta, unitType, numero, desc) 
         var delta  = parseFloat(qteDelta) || 0;
         var after  = parseFloat((before + delta).toFixed(unitType === 'kg' ? 3 : 2));
         p.stock = after;
+        // Reporte automatiquement le dernier prix d'achat calculé (montant ÷ quantité, voir
+        // invModalSubmit) sur la fiche du produit lié — qu'il s'agisse d'un produit tout juste créé
+        // depuis cette modale ou d'un article déjà existant du catalogue : dans les deux cas le prix
+        // de revient (costPrice) reste aligné sur le dernier achat enregistré.
+        if (costPrice != null && !isNaN(costPrice) && costPrice >= 0) {
+            p.costPrice = costPrice;
+        }
         if (!Array.isArray(p.stockHistory)) p.stockHistory = [];
         var userName = 'system';
         try { if (typeof currentUser !== 'undefined' && currentUser && (currentUser.name || currentUser.username)) userName = currentUser.name || currentUser.username; } catch(e) {}
@@ -1261,7 +1268,7 @@ window.invModalSubmit = function() {
     });
     invSave(list);
     if (produitId != null && qte) {
-        window._invApplyStockIn(produitId, qte, unitType, list[0].numero, desc);
+        window._invApplyStockIn(produitId, qte, unitType, list[0].numero, desc, prixUnit);
     }
     document.getElementById('inv-add-modal').style.display = 'none';
     invRender(); invUpdateStats();
