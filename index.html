@@ -817,6 +817,26 @@ function invSave(list) {
     cpDriveMarkDirty();
 }
 
+// ===== SOLDE RÉEL ESPÈCES / CB (partagé avec Finances Pro, clé covo_real_balance) =====
+// Chaque achat payé "comptant" ou "cb" déduit automatiquement le montant correspondant du
+// solde réel disponible ; une suppression ou une modification d'achat ajuste symétriquement
+// (voir invDelete / invSaveEdit). Finances Pro affiche ce solde et permet d'en définir le
+// montant de départ (fond de caisse) — cette fonction ne fait qu'appliquer un delta et logguer.
+const REAL_BALANCE_KEY = 'covo_real_balance';
+function _covoRealBalanceAdjust(bucket, delta, desc) {
+    if ((bucket !== 'especes' && bucket !== 'cb') || !delta) return;
+    var data;
+    try { data = JSON.parse(localStorage.getItem(REAL_BALANCE_KEY)) || {}; } catch(e) { data = {}; }
+    if (typeof data.especes !== 'number') data.especes = 0;
+    if (typeof data.cb !== 'number') data.cb = 0;
+    if (!Array.isArray(data.log)) data.log = [];
+    data[bucket] = parseFloat((data[bucket] + delta).toFixed(2));
+    data.log.unshift({ ts: new Date().toISOString(), bucket: bucket, delta: parseFloat(delta.toFixed(2)), after: data[bucket], desc: desc || '' });
+    if (data.log.length > 300) data.log = data.log.slice(0, 300);
+    localStorage.setItem(REAL_BALANCE_KEY, JSON.stringify(data));
+    if (typeof cpDriveMarkDirty === 'function') cpDriveMarkDirty();
+}
+
 
 // Génère le prochain numéro unique séquentiel pour un approvisionnement
 function invNextNumero() {
@@ -1267,6 +1287,9 @@ window.invModalSubmit = function() {
         produitId: produitId, produitNom: linkedProduct ? linkedProduct.name : null, produitBarcode: produitBarcode
     });
     invSave(list);
+    if (payMode === 'comptant' || payMode === 'cb') {
+        _covoRealBalanceAdjust(payMode === 'comptant' ? 'especes' : 'cb', -montant, 'Achat #' + list[0].numero + ' — ' + desc);
+    }
     if (produitId != null && qte) {
         window._invApplyStockIn(produitId, qte, unitType, list[0].numero, desc, prixUnit);
     }
@@ -2267,6 +2290,9 @@ function invDelete(id) {
     const entry = invLoad().find(e => e.id === id);
     const list = invLoad().filter(e => e.id !== id);
     invSave(list);
+    if (entry && (entry.paiement === 'comptant' || entry.paiement === 'cb')) {
+        _covoRealBalanceAdjust(entry.paiement === 'comptant' ? 'especes' : 'cb', entry.montant, 'Suppression achat #' + (entry.numero || '') + ' — ' + (entry.desc || ''));
+    }
     invRender();
     invUpdateStats();
     if (entry && typeof addRetourHist === 'function') {
@@ -2549,7 +2575,17 @@ function invSaveEdit() {
     if (idx === -1) { showScanToast('Entr\u00e9e introuvable', 'error'); return; }
     var prevReste = parseFloat(list[idx].resteADoit || 0);
     var prevSoldeAt = list[idx].soldeAt || null;
+    var prevPaiement = list[idx].paiement;
+    var prevMontant = list[idx].montant;
     list[idx] = Object.assign({}, list[idx], { desc:desc, montant:montant, date:date, cat:cat, note:note||null, fournisseur:fournisseur||null, qte:qte, unitType:unitType, prixUnit:prixUnit, nbPacks:nbPacks, packSize:packSize, prixPack:prixPack, dlc:dlc, paiement:payMode, acompte:acompte, echeance:echeance });
+    // Solde r\u00e9el esp\u00e8ces/CB : annule l'effet de l'ancien paiement puis applique le nouveau
+    // (couvre les 4 cas : montant chang\u00e9, mode chang\u00e9, entr\u00e9e/sortie de comptant/cb).
+    if (prevPaiement === 'comptant' || prevPaiement === 'cb') {
+        _covoRealBalanceAdjust(prevPaiement === 'comptant' ? 'especes' : 'cb', prevMontant, 'Modif. achat #' + (list[idx].numero || '') + ' (annulation ancien montant)');
+    }
+    if (payMode === 'comptant' || payMode === 'cb') {
+        _covoRealBalanceAdjust(payMode === 'comptant' ? 'especes' : 'cb', -montant, 'Modif. achat #' + (list[idx].numero || '') + ' \u2014 ' + desc);
+    }
     if (payMode === 'credit') {
         var logs = list[idx].paymentLogs || [];
         var totalPaid = (acompte || 0) + logs.reduce(function(s, p) { return s + p.amount; }, 0);
