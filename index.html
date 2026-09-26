@@ -562,12 +562,17 @@
         </div>
       </div>
       <div id="inv-edit-pay-history" style="display:none;">
-        <label style="font-size:0.72rem;font-weight:700;color:#7f8c8d;text-transform:uppercase;display:block;margin-bottom:6px;">&#x1f4dd; Historique des paiements</label>
+        <label style="font-size:0.72rem;font-weight:700;color:#7f8c8d;text-transform:uppercase;display:block;margin-bottom:6px;">&#x1f4dd; Historique des paiements &amp; dettes</label>
         <div id="inv-edit-pay-list" style="max-height:140px;overflow-y:auto;color:var(--text-main,#2c3e50);"></div>
         <div style="display:flex;gap:6px;margin-top:8px;">
           <input id="inv-edit-pay-amount" type="number" step="0.01" min="0" placeholder="Montant du paiement..." style="flex:1;padding:8px 10px;border:1.5px solid #27ae60;border-radius:7px;font-size:0.84rem;box-sizing:border-box;">
           <button onclick="invEditAddPayment()" style="padding:8px 14px;background:linear-gradient(135deg,#27ae60,#229954);color:white;border:none;border-radius:7px;font-size:0.82rem;font-weight:700;cursor:pointer;">+ Paiement</button>
         </div>
+        <div style="display:flex;gap:6px;margin-top:8px;">
+          <input id="inv-edit-debt-amount" type="number" step="0.01" min="0" placeholder="Montant repris chez le fournisseur..." style="flex:1;padding:8px 10px;border:1.5px solid #e74c3c;border-radius:7px;font-size:0.84rem;box-sizing:border-box;">
+          <button onclick="invEditAddDebt()" style="padding:8px 14px;background:linear-gradient(135deg,#e74c3c,#c0392b);color:white;border:none;border-radius:7px;font-size:0.82rem;font-weight:700;cursor:pointer;white-space:nowrap;">+ Dette</button>
+        </div>
+        <input id="inv-edit-debt-note" type="text" placeholder="Motif (optionnel) : ex. 2 cartons suppl&#xe9;mentaires..." style="width:100%;margin-top:6px;padding:7px 10px;border:1.5px solid var(--border-color,#e0e0e0);border-radius:7px;font-size:0.78rem;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);">
       </div>
       <div id="inv-edit-due-alert" style="display:none;"></div>
     </div>
@@ -2571,6 +2576,58 @@ function invEditAddPayment() {
     if (justSolde) { invRender(); invUpdateStats(); }
 }
 
+function invEditAddDebt() {
+    var id = document.getElementById('inv-edit-id').value;
+    var amount = parseFloat(document.getElementById('inv-edit-debt-amount').value || 0);
+    if (!amount || amount <= 0) { showScanToast('Montant invalide', 'info'); return; }
+    var note = (document.getElementById('inv-edit-debt-note').value || '').trim();
+    var list = invLoad(); var entry = list.find(function(e) { return e.id === id; });
+    if (!entry) return;
+    if (!Array.isArray(entry.debtLogs)) entry.debtLogs = [];
+    entry.debtLogs.push({ date: new Date().toISOString(), amount: amount, note: note || null, user: (typeof window._covoCurrentUser === 'function' && window._covoCurrentUser()) ? window._covoCurrentUser().name : 'admin' });
+    entry.montant = parseFloat(((entry.montant || 0) + amount).toFixed(2));
+    // Réouverture du crédit si celui-ci avait été soldé
+    if (entry.soldeAt) entry.soldeAt = null;
+    var logs = Array.isArray(entry.paymentLogs) ? entry.paymentLogs : [];
+    var totalPaid = (entry.acompte || 0) + logs.reduce(function(s, p) { return s + p.amount; }, 0);
+    entry.resteADoit = parseFloat(Math.max(0, entry.montant - totalPaid).toFixed(2));
+    invSave(list);
+    document.getElementById('inv-edit-debt-amount').value = '';
+    document.getElementById('inv-edit-debt-note').value = '';
+    var montantEl = document.getElementById('inv-edit-montant');
+    if (montantEl) montantEl.value = entry.montant;
+    var summary = document.getElementById('inv-edit-summary');
+    if (summary) { var ds = new Date(entry.date+'T12:00:00').toLocaleDateString('fr-FR',{day:'2-digit',month:'long',year:'numeric'}); summary.textContent = (entry.numero ? '#' + entry.numero + ' · ' : '') + entry.montant.toFixed(2) + ' € · ' + ds; }
+    invEditRenderPayHistory(entry);
+    if (typeof addRetourHist === 'function') {
+        addRetourHist('credit_dette', 'invest',
+            '➕ Dette ajoutée',
+            (entry.desc || '—') + ' · +' + amount.toFixed(2) + ' €' + (note ? ' (' + note + ')' : '') +
+            ' — total dû ' + entry.resteADoit.toFixed(2) + ' €'
+        );
+    }
+    showScanToast('Dette de ' + amount.toFixed(2) + ' € ajoutée', 'info');
+    invRender(); invUpdateStats();
+}
+
+function invEditDeleteDebt(idx) {
+    var id = document.getElementById('inv-edit-id').value;
+    var list = invLoad(); var entry = list.find(function(e) { return e.id === id; });
+    if (!entry || !Array.isArray(entry.debtLogs)) return;
+    var removed = entry.debtLogs.splice(idx, 1)[0];
+    if (removed) entry.montant = parseFloat(Math.max(0, (entry.montant || 0) - removed.amount).toFixed(2));
+    var logs = Array.isArray(entry.paymentLogs) ? entry.paymentLogs : [];
+    var totalPaid = (entry.acompte || 0) + logs.reduce(function(s, p) { return s + p.amount; }, 0);
+    entry.resteADoit = parseFloat(Math.max(0, entry.montant - totalPaid).toFixed(2));
+    invSave(list);
+    var montantEl = document.getElementById('inv-edit-montant');
+    if (montantEl) montantEl.value = entry.montant;
+    var summary = document.getElementById('inv-edit-summary');
+    if (summary) { var ds = new Date(entry.date+'T12:00:00').toLocaleDateString('fr-FR',{day:'2-digit',month:'long',year:'numeric'}); summary.textContent = (entry.numero ? '#' + entry.numero + ' · ' : '') + entry.montant.toFixed(2) + ' € · ' + ds; }
+    invEditRenderPayHistory(entry);
+    invRender(); invUpdateStats();
+}
+
 function invEditRecalcReste() {
     var id = document.getElementById('inv-edit-id').value;
     var list = invLoad(); var entry = list.find(function(e) { return e.id === id; });
@@ -2592,6 +2649,7 @@ function invEditRecalcReste() {
 function invEditRenderPayHistory(entry) {
     var listEl = document.getElementById('inv-edit-pay-list'); if (!listEl) return;
     var logs = Array.isArray(entry.paymentLogs) ? entry.paymentLogs : [];
+    var debts = Array.isArray(entry.debtLogs) ? entry.debtLogs : [];
     var totalPaid = (entry.acompte || 0) + logs.reduce(function(s, p) { return s + p.amount; }, 0);
     var reste = Math.max(0, parseFloat((entry.montant - totalPaid).toFixed(2)));
     var html = '';
@@ -2599,15 +2657,28 @@ function invEditRenderPayHistory(entry) {
         html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:rgba(243,156,18,0.08);border-radius:6px;margin-bottom:4px;font-size:0.75rem;">';
         html += '<span>\ud83d\udcb0</span><span style="flex:1;">Acompte initial</span><span style="font-weight:700;color:#e67e22;">+' + entry.acompte.toFixed(2) + ' \u20ac</span></div>';
     }
-    logs.forEach(function(p, idx) {
-        var d = new Date(p.date);
+    // Journal chronologique fusionn\u00e9 : paiements (r\u00e9duisent le solde) et dettes (reprises fournisseur)
+    var ledger = [];
+    logs.forEach(function(p, idx) { ledger.push({ kind:'pay', idx: idx, date: p.date, amount: p.amount, user: p.user }); });
+    debts.forEach(function(d, idx) { ledger.push({ kind:'debt', idx: idx, date: d.date, amount: d.amount, note: d.note, user: d.user }); });
+    ledger.sort(function(a, b) { return new Date(a.date) - new Date(b.date); });
+    ledger.forEach(function(e) {
+        var d = new Date(e.date);
         var ds = d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'}) + ' ' + d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
-        html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:rgba(39,174,96,0.06);border-radius:6px;margin-bottom:4px;font-size:0.75rem;">';
-        html += '<span>✅</span><span style="flex:1;">' + ds + (p.user ? ' \u00b7 ' + p.user : '') + '</span>';
-        html += '<span style="font-weight:700;color:#27ae60;">+' + p.amount.toFixed(2) + ' \u20ac</span>';
-        html += '<button onclick="invEditDeletePayment(' + idx + ')" style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:0.8rem;padding:0 4px;">\u2716</button></div>';
+        if (e.kind === 'pay') {
+            html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:rgba(39,174,96,0.06);border-radius:6px;margin-bottom:4px;font-size:0.75rem;">';
+            html += '<span>✅</span><span style="flex:1;">' + ds + (e.user ? ' \u00b7 ' + _invEsc(e.user) : '') + '</span>';
+            html += '<span style="font-weight:700;color:#27ae60;">-' + e.amount.toFixed(2) + ' \u20ac</span>';
+            html += '<button onclick="invEditDeletePayment(' + e.idx + ')" style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:0.8rem;padding:0 4px;">\u2716</button></div>';
+        } else {
+            html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:rgba(231,76,60,0.06);border-radius:6px;margin-bottom:4px;font-size:0.75rem;">';
+            html += '<span>\ud83d\udd01</span><span style="flex:1;">' + ds + ' \u00b7 reprise fournisseur' + (e.note ? ' \u2014 ' + _invEsc(e.note) : '') + (e.user ? ' \u00b7 ' + _invEsc(e.user) : '') + '</span>';
+            html += '<span style="font-weight:700;color:#e74c3c;">+' + e.amount.toFixed(2) + ' \u20ac</span>';
+            html += '<button onclick="invEditDeleteDebt(' + e.idx + ')" style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:0.8rem;padding:0 4px;">\u2716</button></div>';
+        }
     });
-    html += '<div style="display:flex;justify-content:space-between;padding:8px 8px 0;border-top:1px dashed #ddd;margin-top:4px;font-size:0.78rem;">';
+    html += '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;padding:8px 8px 0;border-top:1px dashed #ddd;margin-top:4px;font-size:0.78rem;">';
+    html += '<span style="color:#888;">Total d\u00fb : <strong style="color:#2c3e50;">' + (entry.montant||0).toFixed(2) + ' \u20ac</strong></span>';
     html += '<span style="color:#888;">Pay\u00e9 : <strong style="color:#27ae60;">' + totalPaid.toFixed(2) + ' \u20ac</strong></span>';
     html += '<span style="color:#888;">Reste : <strong style="color:' + (reste > 0 ? '#e74c3c' : '#27ae60') + ';">' + reste.toFixed(2) + ' \u20ac</strong></span></div>';
     listEl.innerHTML = html;
@@ -2751,7 +2822,7 @@ function invSaveEdit() {
         } else {
             list[idx].soldeAt = prevSoldeAt; // conserver la date originale
         }
-    } else { list[idx].resteADoit = null; list[idx].paymentLogs = null; list[idx].soldeAt = null; }
+    } else { list[idx].resteADoit = null; list[idx].paymentLogs = null; list[idx].debtLogs = null; list[idx].soldeAt = null; }
     invSave(list); invCloseEdit(); invRender(); invUpdateStats();
     if (typeof addRetourHist === 'function') {
         var justSoldeEdit2 = payMode === 'credit' && prevReste > 0 && list[idx].resteADoit <= 0;
