@@ -4954,5 +4954,255 @@ window.cpMaybeShowInstallBanner = function(){
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else setTimeout(start, 0);
 })();
 </script>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   APPROVISIONNEMENT PRO — FICHE D'UN ACHAT EXISTANT (modification)
+   Même présentation que « Nouvel achat » : étapes à gauche, fiche de l'achat à droite.
+   • Statut de l'achat (payé, crédit x %, soldé, offert) et montants
+   • 🔗 Produit lié : confirmation du lien + ce qui a été enregistré à la création
+     (nom et code-barres saisis, quantité entrée en stock avec le mouvement réel
+     avant → après, prix d'achat appliqué, prix de vente modifié), fiche actuelle
+     du produit (image, n°, catégorie, prix, stock) et historique de ses achats
+   • Alertes en direct pendant la modification (quantité ≠ stock, prix…)
+   ═══════════════════════════════════════════════════════════════════════════ */
+(function () {
+    'use strict';
+    if (window._ivpEditInstalled) return;
+    window._ivpEditInstalled = true;
+
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function norm(s) { return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim(); }
+    function eur(v, d) { v = +v || 0; return v.toLocaleString('fr-FR', { minimumFractionDigits: d == null ? 2 : d, maximumFractionDigits: d == null ? 2 : d }) + ' €'; }
+    function num(v) { var n = parseFloat(String(v == null ? '' : v).replace(',', '.')); return isNaN(n) ? 0 : n; }
+    function loadList() { try { return (typeof invLoad === 'function') ? invLoad() : (JSON.parse(localStorage.getItem('covo_approvisionnements')) || []); } catch (e) { return []; } }
+    function loadProducts() { try { return JSON.parse(localStorage.getItem('covo_products')) || []; } catch (e) { return []; } }
+    function dFr(s, opt) { try { var d = new Date(String(s).length === 10 ? s + 'T12:00:00' : s); return isNaN(d) ? '—' : d.toLocaleDateString('fr-FR', opt || { day: '2-digit', month: 'short', year: 'numeric' }); } catch (e) { return s || ''; } }
+    function dtFr(s) { try { var d = new Date(s); return isNaN(d) ? '—' : d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); } catch (e) { return '—'; } }
+    function el(html) { var d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstChild; }
+    var PAY = { comptant: ['💵', 'Comptant', '#16a34a'], cb: ['💳', 'CB', '#2563eb'], cheque: ['📄', 'Chèque', '#d97706'], credit: ['🔄', 'Crédit', '#dc2626'], offert: ['🎁', 'Offert', '#0d9488'] };
+
+    var css = document.createElement('style');
+    css.textContent = [
+        '#inv-edit-modal{padding:clamp(6px,1.5vw,20px)!important;}',
+        '#inv-edit-modal > div{max-width:min(1800px,97vw)!important;width:100%!important;max-height:95vh!important;border-radius:20px!important;}',
+        '#inv-edit-modal > div > div:first-child{background:linear-gradient(120deg,#2e1065,#4c1d95 50%,#7c3aed)!important;padding:16px 22px!important;gap:12px;}',
+        '#inv-edit-modal .ive-title{display:flex;align-items:center;gap:12px;color:#fff;min-width:0;}',
+        '#inv-edit-modal .ive-title .ico{width:40px;height:40px;border-radius:12px;background:rgba(255,255,255,.16);display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0;}',
+        '#inv-edit-title{font-size:1.05rem!important;font-weight:900!important;}',
+        '#inv-edit-summary{text-align:left!important;margin:2px 0 0!important;color:rgba(255,255,255,.85)!important;font-weight:600;}',
+        '#inv-edit-modal .ive-body{flex:1;overflow-y:auto;display:grid;grid-template-columns:1fr clamp(310px,28vw,460px);background:var(--bg-body);}',
+        '#inv-edit-modal input:not([type=checkbox]):not([type=file]),#inv-edit-modal select,#inv-edit-modal textarea{border-radius:10px!important;border:1.5px solid var(--ivp-line)!important;}',
+        '#inv-edit-modal select,#inv-edit-modal input[type=date],#inv-edit-modal #inv-edit-desc,#inv-edit-modal #inv-edit-fournisseur,#inv-edit-modal #inv-edit-facture,#inv-edit-modal #inv-edit-qte,#inv-edit-modal textarea{background:var(--ivp-card)!important;color:var(--text-main)!important;}',
+        'body.dark-mode #inv-edit-modal input[type=date]{color-scheme:dark;}',
+        'body.dark-mode #inv-edit-pay-btns button[style*="rgb(255, 255, 255)"],body.dark-mode #inv-edit-modal .ivm-sec button[style*="background: rgb(245, 245, 245)"]{background:var(--ivp-card)!important;color:var(--text-main)!important;border-color:var(--ivp-line)!important;}',
+        '#inv-edit-modal input:focus,#inv-edit-modal select:focus,#inv-edit-modal textarea:focus{border-color:#7c3aed!important;box-shadow:0 0 0 4px rgba(124,58,237,.12);outline:none;}',
+        '.ive-link{border-radius:12px;padding:11px 12px;display:flex;gap:11px;align-items:center;}',
+        '.ive-link.ok{background:rgba(22,163,74,.08);border:1.5px solid rgba(22,163,74,.35);}',
+        '.ive-link.free{background:var(--bg-body);border:1.5px dashed var(--ivp-line);}',
+        '.ive-link.lost{background:rgba(220,38,38,.07);border:1.5px solid rgba(220,38,38,.35);}',
+        '.ive-link .img{width:52px;height:52px;border-radius:11px;background:var(--ivp-card);border:1px solid var(--ivp-line);display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:1.4rem;flex-shrink:0;}',
+        '.ive-link .img img{width:100%;height:100%;object-fit:contain;}',
+        '.ive-link b{display:block;font-size:.86rem;font-weight:900;}',
+        '.ive-link small{display:block;font-size:.68rem;color:var(--ivp-mute);font-weight:700;margin-top:2px;}',
+        '.ive-link .st{margin-left:auto;font-size:.66rem;font-weight:900;padding:3px 9px;border-radius:9px;white-space:nowrap;}',
+        '.ive-link.ok .st{background:#16a34a;color:#fff;}.ive-link.lost .st{background:#dc2626;color:#fff;}.ive-link.free .st{background:var(--ivp-soft);color:var(--ivp-mute);}',
+        '.ive-status{border-radius:14px;padding:14px;color:#fff;margin-bottom:12px;background:linear-gradient(135deg,#4c1d95,#7c3aed);}',
+        '.ive-status.credit{background:linear-gradient(135deg,#b45309,#ea580c);}.ive-status.late{background:linear-gradient(135deg,#991b1b,#dc2626);}.ive-status.paid{background:linear-gradient(135deg,#166534,#16a34a);}.ive-status.gift{background:linear-gradient(135deg,#0f766e,#14b8a6);}',
+        '.ive-status small{font-size:.66rem;font-weight:800;opacity:.88;text-transform:uppercase;letter-spacing:.4px;}',
+        '.ive-status b{display:block;font-size:1.65rem;font-weight:900;letter-spacing:-.5px;margin:2px 0;}',
+        '.ive-status span{font-size:.74rem;font-weight:700;opacity:.92;}',
+        '.ive-status .bar{height:6px;border-radius:4px;background:rgba(255,255,255,.25);overflow:hidden;margin-top:8px;}.ive-status .bar i{display:block;height:100%;background:#fff;border-radius:4px;}',
+        '.ive-blk{border:1px solid var(--ivp-line);border-radius:14px;padding:11px 12px;margin-bottom:12px;background:var(--ivp-card);}',
+        '.ive-blk h4{margin:0 0 8px;font-size:.72rem;font-weight:900;text-transform:uppercase;letter-spacing:.5px;color:var(--ivp-mute);display:flex;align-items:center;gap:6px;}',
+        '.ive-blk h4 em{font-style:normal;margin-left:auto;font-size:.62rem;padding:2px 8px;border-radius:8px;background:#16a34a;color:#fff;letter-spacing:0;text-transform:none;}',
+        '.ive-blk h4 em.warn{background:#d97706;}.ive-blk h4 em.bad{background:#dc2626;}',
+        '.ive-kv{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px dashed var(--ivp-line);font-size:.75rem;}',
+        '.ive-kv:last-child{border-bottom:none;}',
+        '.ive-kv span{color:var(--ivp-mute);font-weight:700;}.ive-kv b{font-weight:800;text-align:right;}',
+        '.ive-hist{display:flex;flex-direction:column;gap:4px;}',
+        '.ive-hist div{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;font-size:.72rem;padding:5px 8px;border-radius:8px;background:var(--bg-body);}',
+        '.ive-hist div.me{outline:1.5px solid #7c3aed;background:var(--ivp-soft);}',
+        '.ive-hist .n{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:800;color:var(--ivp-mute);font-size:.66rem;}',
+        '.ive-hist .p{font-weight:800;white-space:nowrap;}',
+        '.ive-foot{display:flex!important;gap:8px;align-items:center;flex-wrap:wrap;}',
+        '.ive-foot .del{border:1.5px solid #dc2626;background:transparent;color:#dc2626;padding:10px 14px;border-radius:11px;font-weight:800;cursor:pointer;margin-right:auto;}',
+        '.ive-foot .del:hover{background:#dc2626;color:#fff;}',
+        '.ive-foot .kbd{font-size:.64rem;color:var(--ivp-mute);font-weight:700;}',
+        '.ive-foot .cancel{border:1.5px solid var(--ivp-line);background:var(--ivp-card);color:var(--text-main);padding:10px 16px;border-radius:11px;font-weight:800;cursor:pointer;}',
+        '.ive-foot .save{border:none;background:linear-gradient(135deg,#7c3aed,#4c1d95);color:#fff;padding:10px 18px;border-radius:11px;font-weight:800;cursor:pointer;box-shadow:0 6px 16px rgba(76,29,149,.3);min-width:180px;}',
+        '@media (max-width:860px){#inv-edit-modal .ive-body{grid-template-columns:1fr;}#inv-edit-modal .ivm-aside{border-left:none;border-top:1px solid var(--ivp-line);position:static;}}',
+        '@media (max-width:560px){#inv-edit-modal .ivm-g2,.ive-desc{grid-template-columns:1fr!important;}.ive-foot .kbd{display:none;}.ive-foot button{flex:1;}}'
+    ].join('\n');
+    document.head.appendChild(css);
+
+    var built = false, cur = null;
+    function sec(n, t, hint) { return el('<section class="ivm-sec"><div class="ivm-sh"><i>' + n + '</i>' + t + (hint ? '<small>' + hint + '</small>' : '') + '</div></section>'); }
+    function build() {
+        if (built) return; built = true;
+        var modal = $('inv-edit-modal'); if (!modal) return;
+        var box = modal.firstElementChild, head = box.children[0];
+        var body = Array.prototype.find.call(box.children, function (c) { return c.querySelector && c.querySelector('#inv-edit-desc'); });
+        var foot = box.lastElementChild;
+        // En-tête : icône + titre + résumé
+        var title = $('inv-edit-title'), sum = $('inv-edit-summary');
+        var wrap = el('<div class="ive-title"><span class="ico">🧾</span><span style="min-width:0;"></span></div>');
+        head.insertBefore(wrap, head.firstChild);
+        wrap.lastChild.appendChild(title); wrap.lastChild.appendChild(sum);
+        // Éléments existants
+        var descRow = $('inv-edit-desc').parentNode.parentNode;
+        var fournRow = $('inv-edit-fournisseur').parentNode.parentNode;     // grille fournisseur | quantité
+        var fourn = $('inv-edit-fournisseur').parentNode, qteCol = $('inv-edit-qte').parentNode.parentNode;
+        var montant = $('inv-edit-montant').parentNode, date = $('inv-edit-date').parentNode, dlc = $('inv-edit-dlc').parentNode, note = $('inv-edit-note').parentNode;
+        var payBlk = $('inv-edit-pay-btns').parentNode, hist = $('inv-edit-pay-history'), due = $('inv-edit-due-alert');
+        var nb = el('<div class="ive-body"><div class="ivm-main"></div><aside class="ivm-aside" id="ive-aside" aria-live="polite"></aside></div>');
+        var main = nb.firstChild;
+        descRow.classList.add('ive-desc');
+        var s1 = sec('1', 'Article', 'désignation, catégorie et produit lié');
+        s1.appendChild(descRow); s1.appendChild(el('<div id="ive-link"></div>'));
+        var s2 = sec('2', 'Fournisseur & document');
+        var g2 = el('<div class="ivm-g2"></div>'); g2.appendChild(fourn); g2.appendChild(date); s2.appendChild(g2);
+        var g2b = el('<div class="ivm-g2"></div>'); g2b.appendChild(dlc); s2.appendChild(g2b);
+        dlc.querySelector('input').style.maxWidth = 'none';
+        var s3 = sec('3', 'Quantité & prix', 'le prix unitaire est recalculé à l’enregistrement');
+        var g3 = el('<div class="ivm-g2"></div>'); g3.appendChild(qteCol); g3.appendChild(montant); s3.appendChild(g3);
+        s3.appendChild(el('<div id="ive-pu" style="font-size:.78rem;font-weight:800;color:#7c3aed;background:var(--ivp-soft);border-radius:10px;padding:8px 11px;"></div>'));
+        var s4 = sec('4', 'Paiement'); payBlk.firstElementChild.style.display = 'none'; s4.appendChild(payBlk); s4.appendChild(hist); s4.appendChild(due);
+        var s5 = sec('5', 'Note', 'facultatif'); note.firstElementChild.style.display = 'none'; s5.appendChild(note);
+        [s1, s2, s3, s4, s5].forEach(function (s) { main.appendChild(s); });
+        if (fournRow && fournRow.parentNode && !fournRow.children.length) fournRow.remove();
+        box.replaceChild(nb, body);
+        // Pied
+        foot.className = 'ive-foot';
+        foot.innerHTML = '<button type="button" class="del" onclick="invDeleteFromEdit()" title="Supprimer cet achat">🗑️ Supprimer</button>'
+            + '<span class="kbd">Ctrl + Entrée : enregistrer · Échap : fermer</span>'
+            + '<button type="button" class="cancel" onclick="invCloseEdit()">Annuler</button>'
+            + '<button type="button" class="save" onclick="invSaveEdit()">✅ Enregistrer les modifications</button>';
+        var t = null; function later() { clearTimeout(t); t = setTimeout(recap, 30); }
+        modal.addEventListener('input', later); modal.addEventListener('change', later); modal.addEventListener('click', later);
+        document.addEventListener('keydown', function (e) {
+            if (modal.style.display !== 'flex' || e.defaultPrevented) return;
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); invSaveEdit(); }
+            else if (e.key === 'Escape') {
+                var ps = document.getElementById('inv-ps-modal');
+                if (ps && ps.getClientRects().length && getComputedStyle(ps).display !== 'none') return;
+                e.preventDefault(); invCloseEdit();
+            }
+        });
+    }
+
+    function productOf(e) { if (!e || e.produitId == null) return null; var list = loadProducts(), i = list.findIndex(function (p) { return String(p.id) === String(e.produitId); }); return i < 0 ? null : { p: list[i], n: i + 1 }; }
+    function stockMove(p, e) {
+        var h = (p && Array.isArray(p.stockHistory)) ? p.stockHistory : [];
+        for (var i = h.length - 1; i >= 0; i--) {
+            var m = h[i];
+            if (m && m.meta && m.meta.source === 'investissement_pro' && String(m.meta.numero) === String(e.numero) && m.type === 'achat') return m;
+        }
+        return null;
+    }
+    function priceMove(p, e) {
+        var h = (p && Array.isArray(p.stockHistory)) ? p.stockHistory : [];
+        for (var i = h.length - 1; i >= 0; i--) { var m = h[i]; if (m && m.meta && m.meta.field === 'price' && /achat #/.test(m.reason || '') && (m.reason || '').indexOf('#' + e.numero) >= 0) return m; }
+        return null;
+    }
+    function sellPrice(p) { return p ? +(p.unitType === 'kg' ? (p.pricePerKg || p.price) : p.price) || 0 : 0; }
+
+    function linkBlock(e) {
+        var box = $('ive-link'); if (!box) return;
+        if (e.produitId == null) { box.innerHTML = '<div class="ive-link free"><div class="img">📝</div><div><b>Achat libre</b><small>Cet achat n’est pas lié à un produit du catalogue : il n’a pas modifié de stock.</small></div><span class="st">Non lié</span></div>'; return; }
+        var r = productOf(e);
+        if (!r) { box.innerHTML = '<div class="ive-link lost"><div class="img">⚠️</div><div><b>' + esc(e.produitNom || 'Produit') + '</b><small>Lié à la création, mais ce produit n’existe plus dans le catalogue (supprimé ?).</small></div><span class="st">Introuvable</span></div>'; return; }
+        var p = r.p, img = p.img && !/placehold/.test(p.img) ? '<img src="' + esc(p.img) + '" alt="" onerror="this.parentNode.textContent=\'📦\'">' : (p.unitType === 'kg' ? '⚖️' : '📦');
+        box.innerHTML = '<div class="ive-link ok"><div class="img">' + img + '</div><div style="min-width:0;"><b>' + esc(p.name) + '</b><small>Fiche n° ' + r.n + (p.barcode ? ' · #' + esc(p.barcode) : '') + (p.category ? ' · ' + esc(p.category) : '') + ' · ' + (p.unitType === 'kg' ? 'vendu au kg' : 'à l’unité') + '</small></div><span class="st">✓ Produit lié</span></div>';
+    }
+
+    function recap() {
+        var aside = $('ive-aside'); if (!aside || !cur) return;
+        var e = loadList().find(function (x) { return x.id === cur; }); if (!e) return;
+        var pay = window._invEditSelectedPay || e.paiement, gift = pay === 'offert';
+        var m = gift ? 0 : num(($('inv-edit-montant') || {}).value), q = num(($('inv-edit-qte') || {}).value);
+        var unit = window._invEditSelectedUnit || e.unitType || 'unit', u = unit === 'kg' ? 'kg' : 'u.';
+        var pu = q > 0 && m > 0 ? m / q : 0;
+        var puEl = $('ive-pu'); if (puEl) puEl.innerHTML = pu ? '🧮 Prix unitaire : ' + eur(pu, unit === 'kg' ? 3 : 2) + ' / ' + u + (e.prixUnit && Math.abs(pu - e.prixUnit) > 0.004 ? ' <span style="color:var(--ivp-mute);font-weight:700;">(enregistré : ' + eur(e.prixUnit) + ')</span>' : '') : (gift ? '🎁 Article offert — pas de prix unitaire' : '🧮 Saisissez la quantité et le montant pour le prix unitaire');
+        // Statut
+        var today = new Date(); today.setHours(0, 0, 0, 0);
+        var st = 'paid', lbl = 'Payé', extra = '', bar = '';
+        if (gift) { st = 'gift'; lbl = 'Article offert'; extra = e.valeurOfferte ? 'Valeur estimée ~' + eur(e.valeurOfferte) : 'Aucune dépense'; }
+        else if (pay === 'credit') {
+            var paid = num(($('inv-edit-acompte') || {}).value) + (Array.isArray(e.paymentLogs) ? e.paymentLogs.reduce(function (s, x) { return s + (+x.amount || 0); }, 0) : 0);
+            var rest = Math.max(0, m - paid), pct = m > 0 ? Math.min(100, Math.round(paid / m * 100)) : 0;
+            var late = rest > 0.004 && e.echeance && new Date(e.echeance + 'T00:00:00') < today;
+            st = rest <= 0.004 ? 'paid' : (late ? 'late' : 'credit');
+            lbl = rest <= 0.004 ? 'Crédit soldé' : (late ? 'Crédit en retard' : 'Crédit en cours');
+            extra = rest > 0.004 ? 'Reste ' + eur(rest) + ' · ' + pct + ' % payé' + (e.echeance ? ' · échéance ' + dFr(e.echeance, { day: '2-digit', month: 'short' }) : '') : (e.soldeAt ? 'Soldé le ' + dFr(e.soldeAt) : 'Entièrement réglé');
+            bar = '<div class="bar"><i style="width:' + pct + '%"></i></div>';
+        } else if (PAY[pay]) { extra = 'Réglé ' + ({ comptant: 'au comptant', cb: 'par carte bancaire', cheque: 'par chèque' }[pay] || ''); }
+        var h = '<div class="ivr-h">Fiche de l’achat #' + esc(e.numero || '—') + '</div>'
+            + '<div class="ive-status ' + st + '"><small>' + lbl + '</small><b>' + (gift ? '🎁 0,00 €' : eur(m)) + '</b><span>' + (PAY[pay] ? PAY[pay][0] + ' ' + PAY[pay][1] + ' · ' : '') + esc(extra) + '</span>' + bar + '</div>';
+        // Informations d'enregistrement
+        h += '<div class="ive-blk"><h4>🗂️ Enregistrement</h4>'
+            + kv('Créé le', e.datetime ? dtFr(e.datetime) : dFr(e.date))
+            + kv('Date d’achat', dFr(e.date, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }))
+            + (e.fournisseur ? kv('Fournisseur', esc(e.fournisseur)) : '')
+            + (e.facture ? kv('Facture / BL', '🧾 ' + esc(e.facture)) : '')
+            + kv('Catégorie', esc(typeof invCatLabel === 'function' ? invCatLabel(e.cat) : e.cat || '—'))
+            + '</div>';
+        // Produit lié
+        var r = productOf(e), alerts = [];
+        if (e.produitId != null) {
+            var mv = r ? stockMove(r.p, e) : null, pm = r ? priceMove(r.p, e) : null;
+            h += '<div class="ive-blk"><h4>🔗 Produit lié <em class="' + (r ? '' : 'bad') + '">' + (r ? '✓ Lien confirmé' : 'Introuvable') + '</em></h4>';
+            h += '<div style="font-size:.68rem;font-weight:900;color:var(--ivp-mute);text-transform:uppercase;letter-spacing:.4px;margin:2px 0 4px;">Enregistré à la création</div>'
+                + kv('Produit choisi', esc(e.produitNom || (r && r.p.name) || '—') + (r && e.produitNom && norm(e.produitNom) !== norm(r.p.name) ? '<br><small style="color:#d97706;">renommé depuis : « ' + esc(r.p.name) + ' »</small>' : ''))
+                + kv('Code-barres saisi', e.produitBarcode ? '#' + esc(e.produitBarcode) : '—')
+                + kv('Quantité entrée en stock', e.qte ? (e.unitType === 'kg' ? (+e.qte).toFixed(3) + ' kg' : '+' + e.qte + ' u.') + (e.unitType === 'pack' && e.nbPacks ? ' (' + e.nbPacks + ' × ' + e.packSize + ')' : '') : '<span style="color:#d97706;">aucune (stock non modifié)</span>')
+                + (mv ? kv('Mouvement de stock', (+mv.before) + ' → <b style="color:#16a34a;">' + (+mv.after) + '</b> · ' + dtFr(mv.date) + (mv.user ? ' · ' + esc(mv.user) : '')) : (e.qte && r ? kv('Mouvement de stock', '<span style="color:var(--ivp-mute);">non retrouvé dans l’historique</span>') : ''))
+                + kv('Prix d’achat appliqué', e.paiement === 'offert' ? 'inchangé (article offert)' : (e.prixUnit ? eur(e.prixUnit) + ' / ' + (e.unitType === 'kg' ? 'kg' : 'u.') : '—'))
+                + (e.pvMaj ? kv('Prix de vente modifié', eur(e.pvMaj.ancien) + ' → <b>' + eur(e.pvMaj.nouveau) + '</b>') : (pm ? kv('Prix de vente modifié', esc(pm.reason)) : ''));
+            if (r) {
+                var p = r.p, sp = sellPrice(p), kg = p.unitType === 'kg', stock = +p.stock || 0;
+                h += '<div style="font-size:.68rem;font-weight:900;color:var(--ivp-mute);text-transform:uppercase;letter-spacing:.4px;margin:10px 0 4px;">Aujourd’hui dans le catalogue</div>'
+                    + kv('Stock actuel', '<span style="color:' + (stock <= 0 ? '#dc2626' : 'inherit') + ';">' + (kg ? stock.toFixed(3) + ' kg' : stock + ' u.') + '</span>')
+                    + kv('Prix de vente', sp ? eur(sp) + (kg ? '/kg' : '') : '—')
+                    + kv('Prix d’achat actuel', p.costPrice != null && p.costPrice !== '' ? eur(p.costPrice) + (e.prixUnit && Math.abs(p.costPrice - e.prixUnit) > 0.004 ? ' <small style="color:var(--ivp-mute);">(mis à jour par un autre achat)</small>' : '') : '—')
+                    + (sp > 0 && pu > 0 ? kv('Marge avec cet achat', '<span style="color:' + ((sp - pu) / sp < 0.15 ? '#dc2626' : '#16a34a') + ';">' + Math.round((sp - pu) / sp * 100) + ' %</span> · ' + eur(sp - pu) + '/' + u) : '');
+                // Historique des achats de ce produit
+                var others = loadList().filter(function (x) { return String(x.produitId) === String(e.produitId); }).sort(function (a, b) { return String(b.datetime || b.date).localeCompare(String(a.datetime || a.date)); });
+                if (others.length > 1) {
+                    h += '<div style="font-size:.68rem;font-weight:900;color:var(--ivp-mute);text-transform:uppercase;letter-spacing:.4px;margin:10px 0 4px;">Achats de ce produit (' + others.length + ')</div><div class="ive-hist">'
+                        + others.slice(0, 6).map(function (x) { return '<div class="' + (x.id === e.id ? 'me' : '') + '"><span class="n">#' + esc(x.numero) + '</span><span>' + dFr(x.date, { day: '2-digit', month: 'short', year: '2-digit' }) + (x.fournisseur ? ' · ' + esc(x.fournisseur) : '') + '</span><span class="p">' + (x.paiement === 'offert' ? '🎁 offert' : (x.prixUnit ? eur(x.prixUnit) + '/' + (x.unitType === 'kg' ? 'kg' : 'u.') : eur(x.montant))) + '</span></div>'; }).join('') + '</div>';
+                }
+                if (q && e.qte && Math.abs(q - e.qte) > 0.0005) alerts.push(['warn', '📦 Quantité modifiée (' + e.qte + ' → ' + q + ') : le stock de « ' + esc(p.name) + ' » ne sera <b>pas</b> corrigé automatiquement. Ajustez-le dans la fiche produit si nécessaire.']);
+                if (sp > 0 && pu > sp) alerts.push(['bad', '⚠️ Avec ce montant, le prix d’achat (' + eur(pu) + ') dépasse le prix de vente (' + eur(sp) + ').']);
+            } else alerts.push(['bad', '⚠️ Le produit lié a été supprimé du catalogue : les informations ci-dessus sont celles enregistrées à la création.']);
+            h += '</div>';
+        } else {
+            h += '<div class="ive-blk"><h4>🔗 Produit lié <em class="warn">Aucun</em></h4><div style="font-size:.74rem;color:var(--ivp-mute);font-weight:600;line-height:1.45;">Achat libre : il n’est rattaché à aucun produit du catalogue, le stock n’a pas été modifié.</div></div>';
+        }
+        if (!gift && !(m > 0)) alerts.push(['bad', '✏️ Le montant est obligatoire (ou choisissez « 🎁 Offert »).']);
+        if (Math.abs(m - (+e.montant || 0)) > 0.004 && !gift) alerts.push(['info', '💶 Montant modifié : ' + eur(e.montant) + ' → ' + eur(m) + '.']);
+        if (alerts.length) h += '<div class="ivr-alerts" style="margin-top:0;">' + alerts.map(function (a) { return '<div class="ivr-al ' + a[0] + '">' + a[1] + '</div>'; }).join('') + '</div>';
+        aside.innerHTML = h;
+        linkBlock(e);
+    }
+    function kv(k, v) { return '<div class="ive-kv"><span>' + k + '</span><b>' + v + '</b></div>'; }
+
+    var origOpen = window.invOpenEdit;
+    if (typeof origOpen === 'function') window.invOpenEdit = function (id) {
+        build();
+        cur = id;
+        var r = origOpen.apply(this, arguments);
+        var e = loadList().find(function (x) { return x.id === id; });
+        if (e) {
+            var t = $('inv-edit-title'); if (t) t.innerHTML = 'Achat <span style="font-family:ui-monospace,Menlo,Consolas,monospace;background:rgba(255,255,255,.2);padding:1px 8px;border-radius:7px;">#' + esc(e.numero || '—') + '</span> · ' + esc(e.desc || '');
+            var s = $('inv-edit-summary'); if (s) s.textContent = dFr(e.date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) + (e.fournisseur ? ' · ' + e.fournisseur : '') + (e.produitId != null ? ' · 🔗 produit lié' : '');
+        }
+        recap();
+        var b = document.querySelector('#inv-edit-modal .ive-body'); if (b) b.scrollTop = 0;
+        return r;
+    };
+    window._iveRecap = recap;
+})();
+</script>
 </body>
 </html>
