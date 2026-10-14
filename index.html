@@ -53,7 +53,7 @@
         'covo_approvisionnements','covo_inv_categories','covo_ech_categories','covo_messages','covo_quick_links',
         'covo_caisse_historique','covo_charges_fixes','covo_paiements','covo_dettes','covo_loyalty','covo_paie',
         'covo_cagnotte','covo_devis','covo_real_balance','covo_inventaires','covo_aw_panels','covo_modules_config',
-        'covo_inv_questions','covo_perm_admin_costprice','covo_admin_notifications'];
+        'covo_inv_questions','covo_perm_admin_costprice','covo_admin_notifications','covo_fournisseurs'];
     var KEYSET = {};
     DATA_KEYS.forEach(function(k){ KEYSET[k] = 1; });
 
@@ -3715,6 +3715,7 @@ function _cpBuildFullBackupPayload() {
         covo_sales: J('covo_sales', []),
         covo_approvisionnements: J('covo_approvisionnements', []),
         covo_inv_categories: J('covo_inv_categories', []),
+        covo_fournisseurs: J('covo_fournisseurs', []),
         covo_ech_categories: J('covo_ech_categories', []),
         covo_messages: J('covo_messages', []),
         covo_login_history: J('covo_login_history', []),
@@ -3950,7 +3951,7 @@ function _cpApplyRestoreCore(data) {
     if (data.covo_dark_mode != null) localStorage.setItem('covo_dark_mode', data.covo_dark_mode);
     ['covo_retours','covo_marchandise','covo_echeances','covo_rhist','covo_hist','covo_sales','covo_approvisionnements',
      'covo_inv_categories','covo_ech_categories','covo_messages','covo_login_history','covo_quick_links',
-     'covo_caisse_historique','covo_charges_fixes','covo_paiements','covo_dettes','covo_loyalty','covo_paie','covo_cagnotte','covo_inventaires','covo_real_balance','covo_devis'
+     'covo_caisse_historique','covo_charges_fixes','covo_paiements','covo_dettes','covo_loyalty','covo_paie','covo_cagnotte','covo_inventaires','covo_real_balance','covo_devis','covo_fournisseurs'
     ].forEach(function(k){ if (data[k] !== undefined) localStorage.setItem(k, JSON.stringify(data[k])); });
     ['covo_aw_panels','covo_modules_config','covo_night_tariff','covo_presence','covo_inv_questions'].forEach(function(k){
         if (data[k] != null) localStorage.setItem(k, typeof data[k] === 'string' ? data[k] : JSON.stringify(data[k]));
@@ -5202,6 +5203,245 @@ window.cpMaybeShowInstallBanner = function(){
         return r;
     };
     window._iveRecap = recap;
+})();
+</script>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   APPROVISIONNEMENT PRO — CHOIX DU FOURNISSEUR (étape 2 « Fournisseur & document »)
+   • Liste déroulante des fournisseurs déjà existants (achats enregistrés + fournisseurs
+     créés), triés par nombre d'achats, avec date du dernier achat — filtrée pendant la frappe
+   • Fournisseur inconnu → « ➕ Créer le fournisseur « X » » (enregistré dans covo_fournisseurs)
+   • Anti-doublon : « metro » ou « METRO » est rattaché automatiquement à « Metro »
+   • Clavier : ↑ ↓ pour choisir, Entrée pour valider, Échap pour fermer la liste
+   • Même fonctionnement dans « Nouvel achat » et dans la fiche d'un achat existant
+   ═══════════════════════════════════════════════════════════════════════════ */
+(function () {
+    'use strict';
+    if (window._ivfInstalled) return;
+    window._ivfInstalled = true;
+
+    var KEY = 'covo_fournisseurs';
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function key(s) { return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
+    function clean(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
+    function toast(m, t) { if (typeof showScanToast === 'function') showScanToast(m, t || 'info'); }
+    function loadSaved() { try { var a = JSON.parse(localStorage.getItem(KEY) || '[]'); return Array.isArray(a) ? a.filter(function (x) { return x && x.name; }) : []; } catch (e) { return []; } }
+    function saveSaved(a) { try { localStorage.setItem(KEY, JSON.stringify(a)); } catch (e) {} if (typeof cpDriveMarkDirty === 'function') { try { cpDriveMarkDirty(); } catch (e) {} } }
+    function purchases() { try { return (typeof invLoad === 'function') ? invLoad() : (JSON.parse(localStorage.getItem('covo_approvisionnements')) || []); } catch (e) { return []; } }
+    function dShort(s) { try { var d = new Date(String(s).length === 10 ? s + 'T12:00:00' : s); return isNaN(d) ? '' : d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: '2-digit' }); } catch (e) { return ''; } }
+
+    /* Liste fusionnée : achats + fournisseurs créés (un seul nom par fournisseur) */
+    function all() {
+        var m = {};
+        purchases().forEach(function (e) {
+            var n = clean(e && e.fournisseur); if (!n) return;
+            var k = key(n); if (!k) return;
+            var x = m[k] || (m[k] = { name: n, n: 0, last: '', total: 0, names: {} });
+            x.n++; x.total += (+e.montant || 0);
+            x.names[n] = (x.names[n] || 0) + 1;
+            var d = e.date || e.datetime || '';
+            if (d > x.last) x.last = d;
+        });
+        Object.keys(m).forEach(function (k) {   // nom le plus utilisé = nom de référence
+            var best = null; Object.keys(m[k].names).forEach(function (n) { if (!best || m[k].names[n] > m[k].names[best]) best = n; }); m[k].name = best;
+        });
+        loadSaved().forEach(function (s) { var k = key(s.name); if (!k) return; if (!m[k]) m[k] = { name: clean(s.name), n: 0, last: '', total: 0, saved: true, created: s.createdAt }; else m[k].saved = true; });
+        return Object.keys(m).map(function (k) { m[k].k = k; return m[k]; })
+            .sort(function (a, b) { return b.n - a.n || a.name.localeCompare(b.name, 'fr', { sensitivity: 'base' }); });
+    }
+    function find(name) { var k = key(name); if (!k) return null; return all().find(function (x) { return x.k === k; }) || null; }
+    function create(name) {
+        name = clean(name); if (!name) return null;
+        var ex = find(name); if (ex) return ex.name;
+        var a = loadSaved(); a.push({ name: name, createdAt: new Date().toISOString() }); saveSaved(a);
+        toast('🏢 Fournisseur « ' + name + ' » créé', 'success');
+        return name;
+    }
+    function removeSaved(name) {
+        var k = key(name); saveSaved(loadSaved().filter(function (s) { return key(s.name) !== k; }));
+        toast('Fournisseur « ' + name + ' » retiré de la liste', 'info');
+    }
+    window._ivfList = all;
+
+    var css = document.createElement('style');
+    css.textContent = [
+        '.ivf-wrap{position:relative;}',
+        '.ivf-wrap input.ivf-in{padding-right:44px!important;}',
+        '.ivf-tog{position:absolute;right:5px;top:5px;bottom:5px;width:34px;border:none;border-radius:7px;background:var(--ivp-soft,rgba(124,58,237,.08));color:#7c3aed;font-size:.8rem;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;}',
+        '.ivf-tog:hover{background:#7c3aed;color:#fff;}',
+        '.ivf-status{margin-top:6px;font-size:.72rem;font-weight:700;display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-height:0;}',
+        '.ivf-status:empty{display:none;}',
+        '.ivf-status .ok{color:#15803d;}.ivf-status .new{color:#b45309;}.ivf-status .mute{color:var(--ivp-mute,#64748b);font-weight:600;}',
+        '.ivf-status button{border:none;border-radius:8px;padding:3px 9px;font-size:.7rem;font-weight:800;cursor:pointer;background:#16a34a;color:#fff;}',
+        '.ivf-status button.alt{background:var(--ivp-soft,rgba(124,58,237,.1));color:#7c3aed;}',
+        '#ivf-dd{position:fixed;z-index:21000;display:none;background:var(--bg-card,#fff);color:var(--text-main,#1f2937);border:1.5px solid rgba(124,58,237,.35);border-radius:14px;box-shadow:0 18px 44px rgba(20,10,50,.28);overflow:hidden;font-family:inherit;}',
+        '#ivf-dd.open{display:flex;flex-direction:column;}',
+        '#ivf-dd .hd{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;font-size:.66rem;font-weight:900;text-transform:uppercase;letter-spacing:.4px;color:var(--ivp-mute,#64748b);border-bottom:1px solid var(--ivp-line,#e5e7eb);background:var(--ivp-soft,rgba(124,58,237,.05));}',
+        '#ivf-dd .ls{overflow-y:auto;padding:5px;display:flex;flex-direction:column;gap:2px;}',
+        '#ivf-dd .it{display:flex;align-items:center;gap:10px;padding:8px 9px;border-radius:10px;cursor:pointer;border:1px solid transparent;}',
+        '#ivf-dd .it.act{background:rgba(124,58,237,.1);border-color:rgba(124,58,237,.35);}',
+        '#ivf-dd .it .av{width:30px;height:30px;border-radius:9px;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.68rem;font-weight:900;}',
+        '#ivf-dd .it .tx{flex:1;min-width:0;}',
+        '#ivf-dd .it b{display:block;font-size:.84rem;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+        '#ivf-dd .it b mark{background:rgba(250,204,21,.45);color:inherit;border-radius:3px;padding:0 1px;}',
+        '#ivf-dd .it small{display:block;font-size:.66rem;color:var(--ivp-mute,#64748b);font-weight:600;margin-top:1px;}',
+        '#ivf-dd .it .cnt{font-size:.64rem;font-weight:900;padding:2px 8px;border-radius:9px;background:var(--ivp-soft,rgba(124,58,237,.1));color:#7c3aed;white-space:nowrap;}',
+        '#ivf-dd .it .cur{font-size:.64rem;font-weight:900;color:#16a34a;}',
+        '#ivf-dd .it .rm{border:none;background:none;color:var(--ivp-mute,#94a3b8);cursor:pointer;font-size:.8rem;padding:2px 5px;border-radius:6px;}',
+        '#ivf-dd .it .rm:hover{background:rgba(220,38,38,.1);color:#dc2626;}',
+        '#ivf-dd .it.new{border:1.5px dashed rgba(22,163,74,.5);background:rgba(22,163,74,.06);}',
+        '#ivf-dd .it.new.act{background:rgba(22,163,74,.14);border-style:solid;}',
+        '#ivf-dd .it.new .av{background:linear-gradient(135deg,#16a34a,#15803d);font-size:1rem;}',
+        '#ivf-dd .empty{padding:16px 12px;text-align:center;font-size:.76rem;color:var(--ivp-mute,#64748b);}',
+        '#ivf-dd .ft{padding:6px 12px;font-size:.62rem;color:var(--ivp-mute,#64748b);font-weight:700;border-top:1px solid var(--ivp-line,#e5e7eb);}'
+    ].join('\n');
+
+    var dd = null, cur = null, act = 0, items = [], browse = false;
+    function color(n) { var h = 0, s = String(n || ''); for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return 'hsl(' + h + ',52%,42%)'; }
+    function ini(n) { var w = String(n || '?').trim().split(/\s+/); return ((w[0] || '?')[0] + ((w[1] || '')[0] || '')).toUpperCase(); }
+    function hl(name, q) {
+        var k = key(q); if (!k) return esc(name);
+        var nn = name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''), i = nn.indexOf(q.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim());
+        if (i < 0) return esc(name);
+        var L = clean(q).length; return esc(name.slice(0, i)) + '<mark>' + esc(name.slice(i, i + L)) + '</mark>' + esc(name.slice(i + L));
+    }
+    function ensureDD() {
+        if (dd) return dd;
+        dd = document.createElement('div'); dd.id = 'ivf-dd'; dd.setAttribute('role', 'listbox'); dd.setAttribute('aria-label', 'Fournisseurs');
+        document.body.appendChild(dd);
+        dd.addEventListener('mousedown', function (e) { e.preventDefault(); });   // garder le focus dans le champ
+        dd.addEventListener('click', function (e) {
+            var rm = e.target.closest('[data-rm]'); if (rm) { removeSaved(rm.getAttribute('data-rm')); render(); status(cur); return; }
+            var it = e.target.closest('.it'); if (!it) return; choose(+it.getAttribute('data-i'));
+        });
+        window.addEventListener('resize', place); window.addEventListener('scroll', place, true);
+        document.addEventListener('mousedown', function (e) { if (dd.classList.contains('open') && cur && e.target !== cur && !dd.contains(e.target) && !(e.target.closest && e.target.closest('.ivf-tog'))) close(); });
+        return dd;
+    }
+    function place() {
+        if (!dd || !cur || !dd.classList.contains('open')) return;
+        var r = cur.getBoundingClientRect();
+        if (!r.width) { close(); return; }
+        var below = window.innerHeight - r.bottom - 12, above = r.top - 12, up = below < 220 && above > below;
+        var h = Math.min(340, Math.max(160, up ? above : below));
+        dd.style.left = Math.max(8, Math.min(r.left, window.innerWidth - Math.max(r.width, 300) - 8)) + 'px';
+        dd.style.width = Math.max(r.width, Math.min(300, window.innerWidth - 16)) + 'px';
+        dd.style.maxHeight = h + 'px';
+        if (up) { dd.style.top = ''; dd.style.bottom = (window.innerHeight - r.top + 6) + 'px'; } else { dd.style.bottom = ''; dd.style.top = (r.bottom + 6) + 'px'; }
+        dd.querySelector('.ls') && (dd.querySelector('.ls').style.maxHeight = (h - 64) + 'px');
+    }
+    function render() {
+        if (!cur) return;
+        var q = clean(cur.value), k = key(q), list = all(), exact = k && list.find(function (x) { return x.k === k; });
+        var fk = browse ? '' : k;
+        var shown = list.filter(function (x) { return !fk || x.k.indexOf(fk) >= 0 || fk.split(' ').every(function (t) { return x.k.indexOf(t) >= 0; }); });
+        items = [];
+        if (q && !exact) items.push({ create: q });
+        shown.forEach(function (x) { items.push(x); });
+        if (act >= items.length) act = items.length - 1; if (act < 0) act = 0;
+        var h = '<div class="hd"><span>🏢 ' + (fk ? 'Fournisseurs correspondants' : 'Fournisseurs existants') + '</span><span>' + list.length + ' au total</span></div><div class="ls">';
+        items.forEach(function (x, i) {
+            if (x.create) { h += '<div class="it new' + (i === act ? ' act' : '') + '" data-i="' + i + '" role="option"><span class="av">＋</span><span class="tx"><b>Créer le fournisseur « ' + esc(x.create) + ' »</b><small>Nouveau — ajouté à votre liste de fournisseurs</small></span></div>'; return; }
+            var isCur = exact && x.k === exact.k;
+            h += '<div class="it' + (i === act ? ' act' : '') + '" data-i="' + i + '" role="option" aria-selected="' + (isCur ? 'true' : 'false') + '">'
+                + '<span class="av" style="background:' + color(x.name) + ';">' + esc(ini(x.name)) + '</span>'
+                + '<span class="tx"><b>' + hl(x.name, fk ? q : '') + '</b><small>' + (x.n ? 'Dernier achat ' + esc(dShort(x.last)) + (x.total ? ' · ' + x.total.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' € au total' : '') : 'Créé — aucun achat pour l’instant') + '</small></span>'
+                + (isCur ? '<span class="cur">✓</span>' : '')
+                + (x.n ? '<span class="cnt">' + x.n + ' achat' + (x.n > 1 ? 's' : '') + '</span>' : '<button type="button" class="rm" data-rm="' + esc(x.name) + '" title="Retirer de la liste">✕</button>')
+                + '</div>';
+        });
+        if (!items.length) h += '<div class="empty">Aucun fournisseur enregistré.<br>Tapez un nom pour le créer.</div>';
+        h += '</div><div class="ft">↑ ↓ choisir · Entrée valider · Échap fermer</div>';
+        ensureDD().innerHTML = h;
+        place();
+        var a = dd.querySelector('.it.act'); if (a && a.scrollIntoView) a.scrollIntoView({ block: 'nearest' });
+    }
+    function open(inp) {
+        cur = inp; act = 0; ensureDD().classList.add('open');
+        var ex0 = find(inp.value); browse = !!ex0;
+        if (ex0) { var L0 = all(); act = Math.max(0, L0.findIndex(function (x) { return x.k === ex0.k; })); }
+        render();
+        inp.setAttribute('aria-expanded', 'true');
+    }
+    function close() { if (dd) dd.classList.remove('open'); if (cur) cur.setAttribute('aria-expanded', 'false'); }
+    function isOpen() { return !!(dd && dd.classList.contains('open')); }
+    function set(inp, v) {
+        inp.value = v;
+        try { inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+        status(inp);
+        if (typeof window._iveRecap === 'function' && inp.id === 'inv-edit-fournisseur') { try { window._iveRecap(); } catch (e) {} }
+    }
+    function choose(i) {
+        var x = items[i]; if (!x || !cur) return;
+        var inp = cur;
+        if (x.create) set(inp, create(x.create)); else set(inp, x.name);
+        close();
+        var nx = inp.id === 'inv-m-fournisseur' ? $('inv-m-facture') : $('inv-edit-facture');
+        if (nx) setTimeout(function () { nx.focus(); }, 0);
+    }
+    function canonical(inp) {
+        var v = clean(inp.value); if (!v) return;
+        var ex = find(v); if (ex && ex.name !== inp.value) set(inp, ex.name); else if (v !== inp.value) set(inp, v);
+    }
+    function status(inp) {
+        var st = $(inp.id + '-ivf'); if (!st) return;
+        var v = clean(inp.value);
+        if (!v) { st.innerHTML = '<span class="mute">Choisissez un fournisseur existant ou créez-en un nouveau.</span>'; return; }
+        var ex = find(v);
+        if (ex) st.innerHTML = '<span class="ok">✓ Fournisseur existant</span><span class="mute">· ' + (ex.n ? ex.n + ' achat' + (ex.n > 1 ? 's' : '') + ' · dernier le ' + esc(dShort(ex.last)) : 'aucun achat pour l’instant') + '</span>';
+        else st.innerHTML = '<span class="new">🆕 Nouveau fournisseur</span><button type="button" data-ivf-create="1">➕ Créer « ' + esc(v) + ' »</button><span class="mute">(ou il sera ajouté à l’enregistrement)</span>';
+    }
+
+    function attach(inp) {
+        if (!inp || inp._ivf) return; inp._ivf = true;
+        if (!$('ivf-css')) { css.id = 'ivf-css'; document.head.appendChild(css); }
+        inp.removeAttribute('list');      // remplace la petite liste du navigateur
+        inp.classList.add('ivf-in');
+        inp.setAttribute('autocomplete', 'off'); inp.setAttribute('role', 'combobox'); inp.setAttribute('aria-autocomplete', 'list'); inp.setAttribute('aria-expanded', 'false');
+        inp.placeholder = 'Choisir ou créer un fournisseur…';
+        var wrap = document.createElement('div'); wrap.className = 'ivf-wrap';
+        inp.parentNode.insertBefore(wrap, inp); wrap.appendChild(inp);
+        var tog = document.createElement('button'); tog.type = 'button'; tog.className = 'ivf-tog'; tog.title = 'Voir tous les fournisseurs'; tog.setAttribute('aria-label', 'Voir tous les fournisseurs'); tog.textContent = '▾';
+        wrap.appendChild(tog);
+        var st = document.createElement('div'); st.className = 'ivf-status'; st.id = inp.id + '-ivf'; st.setAttribute('aria-live', 'polite');
+        wrap.parentNode.insertBefore(st, wrap.nextSibling);
+        tog.addEventListener('mousedown', function (e) { e.preventDefault(); });
+        tog.addEventListener('click', function () { if (isOpen() && cur === inp) close(); else { inp.focus(); open(inp); } });
+        inp.addEventListener('focus', function () { open(inp); });
+        inp.addEventListener('input', function (e) { if (!e.isTrusted && !isOpen()) return; if (!isOpen()) open(inp); browse = false; act = 0; render(); status(inp); });
+        inp.addEventListener('blur', function () { setTimeout(function () { if (document.activeElement !== inp) { close(); canonical(inp); status(inp); } }, 120); });
+        inp.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault(); if (!isOpen()) { open(inp); return; }
+                act = Math.max(0, Math.min(items.length - 1, act + (e.key === 'ArrowDown' ? 1 : -1))); render();
+            } else if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+                if (isOpen() && items.length) { e.preventDefault(); e.stopPropagation(); choose(act); }
+            } else if (e.key === 'Escape') {
+                if (isOpen()) { e.preventDefault(); e.stopPropagation(); close(); }
+            } else if (e.key === 'Tab') { close(); }
+        });
+        st.addEventListener('click', function (e) { if (e.target.closest('[data-ivf-create]')) { set(inp, create(inp.value)); } });
+        status(inp);
+    }
+
+    function setup() {
+        attach($('inv-m-fournisseur')); attach($('inv-edit-fournisseur'));
+        ['inv-m-fournisseur', 'inv-edit-fournisseur'].forEach(function (id) { var i = $(id); if (i) { i.removeAttribute('list'); status(i); } });
+        close();
+    }
+    var o1 = window.invOpenAddModal;
+    if (typeof o1 === 'function') window.invOpenAddModal = function () { var r = o1.apply(this, arguments); setup(); return r; };
+    var o2 = window.invOpenEdit;
+    if (typeof o2 === 'function') window.invOpenEdit = function () { var r = o2.apply(this, arguments); setup(); return r; };
+    // À l'enregistrement : nom harmonisé (pas de doublon « metro » / « Metro »)
+    function beforeSave(id) { var i = $(id); if (i) canonical(i); }
+    function refreshStatus() { ['inv-m-fournisseur', 'inv-edit-fournisseur'].forEach(function (id) { var i = $(id); if (i && i._ivf) status(i); }); }
+    document.addEventListener('click', function (e) { if (e.target.closest && e.target.closest('#ivm-fchips')) setTimeout(refreshStatus, 30); });
+    var s1 = window.invModalSubmit;
+    if (typeof s1 === 'function') window.invModalSubmit = function () { close(); beforeSave('inv-m-fournisseur'); var r = s1.apply(this, arguments); setTimeout(refreshStatus, 60); return r; };
+    var s2 = window.invSaveEdit;
+    if (typeof s2 === 'function') window.invSaveEdit = function () { close(); beforeSave('inv-edit-fournisseur'); return s2.apply(this, arguments); };
 })();
 </script>
 </body>
