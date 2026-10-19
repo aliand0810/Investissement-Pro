@@ -5700,5 +5700,506 @@ window.cpMaybeShowInstallBanner = function(){
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
 </script>
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   APPROVISIONNEMENT PRO — SORTIE DE MARCHANDISES (revente d'une partie d'un achat)
+   • « Nouvel achat » : section « Sortie de marchandises » (facultative) — quantité sortie,
+     montant obtenu, mode d'encaissement (Espèces, CB, Virement, Chèque), motif / client
+   • À l'enregistrement, injection automatique :
+       – la quantité sortie est retirée du stock du produit lié (historique de stock « sortie ») ;
+       – le montant obtenu est ajouté au solde réel partagé (covo_real_balance) :
+         Espèces → solde espèces · CB, Virement, Chèque → solde CB / banque
+   • Fiche d'un achat existant : voir la sortie, l'annuler (stock et solde rétablis)
+     ou en ajouter une après coup
+   • Liste / tableau : badge « 📤 Sortie » ; suppression d'un achat → montant encaissé retiré du solde
+   Données : entry.sortie = { qte, unit, montant, mode, bucket, motif, date, datetime,
+             prixRevient, marge, stockApplied } dans covo_approvisionnements
+   ════════════════════════════════════════════════════════════════════════ */
+(function () {
+    'use strict';
+    if (window._ivoInstalled) return;
+    window._ivoInstalled = true;
+
+    var MODES = {
+        especes:  { i: '💵', l: 'Espèces',  b: 'especes', sol: 'solde espèces' },
+        cb:       { i: '💳', l: 'CB',       b: 'cb',      sol: 'solde CB / banque' },
+        virement: { i: '🏦', l: 'Virement', b: 'cb',      sol: 'solde CB / banque' },
+        cheque:   { i: '📄', l: 'Chèque',   b: 'cb',      sol: 'solde CB / banque' }
+    };
+    var ORDER = ['especes', 'cb', 'virement', 'cheque'];
+
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function eur(v, d) { v = +v || 0; return v.toLocaleString('fr-FR', { minimumFractionDigits: d == null ? 2 : d, maximumFractionDigits: d == null ? 2 : d }) + ' €'; }
+    function num(v) { var n = parseFloat(String(v == null ? '' : v).replace(',', '.')); return isFinite(n) ? n : 0; }
+    function r3(v) { return Math.round((+v || 0) * 1000) / 1000; }
+    function r2(v) { return Math.round((+v || 0) * 100) / 100; }
+    function toast(m, t) { if (typeof showScanToast === 'function') showScanToast(m, t || 'info'); }
+    function dirty() { if (typeof cpDriveMarkDirty === 'function') { try { cpDriveMarkDirty(); } catch (e) {} } }
+    function loadList() { try { return (typeof invLoad === 'function') ? invLoad() : (JSON.parse(localStorage.getItem('covo_approvisionnements')) || []); } catch (e) { return []; } }
+    function saveList(l) { if (typeof invSave === 'function') invSave(l); else { localStorage.setItem('covo_approvisionnements', JSON.stringify(l)); dirty(); } }
+    function loadProducts() { try { return JSON.parse(localStorage.getItem('covo_products')) || []; } catch (e) { return []; } }
+    function findProduct(id) { if (id == null) return null; return loadProducts().find(function (p) { return String(p.id) === String(id); }) || null; }
+    function sellPrice(p) { return p ? +(p.unitType === 'kg' ? (p.pricePerKg || p.price) : p.price) || 0 : 0; }
+    function uLbl(unit) { return unit === 'kg' ? 'kg' : 'u.'; }
+    function fmtQ(q, unit) { return unit === 'kg' ? r3(q).toLocaleString('fr-FR', { maximumFractionDigits: 3 }) + ' kg' : (+r3(q)).toLocaleString('fr-FR') + ' u.'; }
+    function userName() { try { if (typeof currentUser !== 'undefined' && currentUser && (currentUser.name || currentUser.username)) return currentUser.name || currentUser.username; } catch (e) {} return 'Approvisionnement Pro'; }
+    function rerender() { try { if (typeof invRender === 'function') invRender(); if (typeof invUpdateStats === 'function') invUpdateStats(); } catch (e) {} }
+
+    /* ───────────── Styles ───────────── */
+    var css = document.createElement('style');
+    css.id = 'ivo-css';
+    css.textContent = [
+        '.ivo-sec .ivm-sh i{background:linear-gradient(135deg,#0d9488,#115e59)!important;}',
+        '.ivo-sw{display:flex;gap:10px;align-items:flex-start;cursor:pointer;padding:10px 12px;border:1.5px dashed var(--ivp-line,#ddd);border-radius:12px;background:var(--bg-body,#f8fafc);}',
+        '.ivo-sw input{width:18px;height:18px;margin:2px 0 0;accent-color:#0d9488;flex-shrink:0;}',
+        '.ivo-sw b{display:block;font-size:.84rem;font-weight:800;color:var(--text-main,#2c3e50);}',
+        '.ivo-sw small{display:block;font-size:.7rem;font-weight:600;color:var(--ivp-mute,#64748b);margin-top:2px;line-height:1.35;}',
+        '.ivo-wrap.on .ivo-sw{border-style:solid;border-color:#0d9488;background:rgba(13,148,136,.07);}',
+        '.ivo-body{display:none;flex-direction:column;gap:11px;}',
+        '.ivo-wrap.on .ivo-body{display:flex;}',
+        '.ivo-body input[type=number],.ivo-body input[type=text]{width:100%;padding:10px 12px;font-size:.88rem;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);border:1.5px solid var(--ivp-line,#ddd);border-radius:10px;font-family:inherit;}',
+        '.ivo-body input:focus{border-color:#0d9488!important;box-shadow:0 0 0 4px rgba(13,148,136,.12)!important;outline:none;}',
+        '.ivo-qrow{display:flex;gap:6px;}',
+        '.ivo-all{flex-shrink:0;border:1.5px solid #0d9488;background:transparent;color:#0d9488;border-radius:10px;padding:0 12px;font-weight:800;font-size:.74rem;cursor:pointer;font-family:inherit;}',
+        '.ivo-modes{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;}',
+        '.ivo-modes button{border:2px solid var(--ivp-line,#ddd);background:var(--ivp-card,#fff);color:var(--text-main,#2c3e50);border-radius:11px;padding:8px 4px;font-size:.74rem;font-weight:800;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;font-family:inherit;}',
+        '.ivo-modes button span{font-size:1.15rem;}',
+        '.ivo-modes button.on{border-color:#0d9488;background:rgba(13,148,136,.1);color:#0f766e;}',
+        'body.dark-mode .ivo-modes button.on{color:#5eead4;}',
+        '.ivo-chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;}',
+        '.ivo-chips button{border:1px solid var(--ivp-line,#ddd);background:var(--bg-body,#f8fafc);color:var(--text-main,#2c3e50);border-radius:14px;padding:3px 10px;font-size:.68rem;font-weight:700;cursor:pointer;font-family:inherit;}',
+        '.ivo-chips button:hover{border-color:#0d9488;color:#0d9488;}',
+        '.ivo-sum{border-radius:12px;background:rgba(13,148,136,.07);border:1px solid rgba(13,148,136,.25);padding:10px 12px;display:flex;flex-direction:column;gap:5px;font-size:.76rem;}',
+        '.ivo-sum .r{display:flex;justify-content:space-between;gap:8px;}',
+        '.ivo-sum .r span{color:var(--ivp-mute,#64748b);font-weight:700;}',
+        '.ivo-sum .r b{font-weight:800;text-align:right;}',
+        '.ivo-sum .inj{margin-top:3px;padding-top:6px;border-top:1px dashed rgba(13,148,136,.35);font-weight:800;color:#0f766e;}',
+        'body.dark-mode .ivo-sum .inj{color:#5eead4;}',
+        '.ivo-al{font-size:.72rem;font-weight:700;border-radius:10px;padding:7px 10px;line-height:1.35;}',
+        '.ivo-al.bad{background:rgba(220,38,38,.1);color:#b91c1c;}.ivo-al.warn{background:rgba(217,119,6,.12);color:#b45309;}.ivo-al.info{background:rgba(37,99,235,.09);color:#1d4ed8;}',
+        'body.dark-mode .ivo-al.bad{color:#fca5a5;}body.dark-mode .ivo-al.warn{color:#fbbf24;}body.dark-mode .ivo-al.info{color:#93c5fd;}',
+        '.ivo-pos{color:#15803d;}.ivo-neg{color:#dc2626;}',
+        'body.dark-mode .ivo-pos{color:#86efac;}body.dark-mode .ivo-neg{color:#fca5a5;}',
+        '.ivo-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;}',
+        '.ivo-actions button{border-radius:10px;padding:9px 14px;font-weight:800;font-size:.8rem;cursor:pointer;font-family:inherit;}',
+        '.ivo-actions .go{border:none;background:linear-gradient(135deg,#0d9488,#115e59);color:#fff;}',
+        '.ivo-actions .undo{border:1.5px solid #dc2626;background:transparent;color:#dc2626;}',
+        '.ivo-card{border:1.5px solid rgba(13,148,136,.35);background:rgba(13,148,136,.06);border-radius:12px;padding:11px 13px;display:flex;flex-direction:column;gap:6px;}',
+        '.ivo-card .t{font-size:.84rem;font-weight:900;color:#0f766e;}',
+        'body.dark-mode .ivo-card .t{color:#5eead4;}',
+        '.ivo-aside{margin-top:12px;border-radius:12px;border:1.5px solid rgba(13,148,136,.35);background:rgba(13,148,136,.06);padding:10px 12px;}',
+        '.ivo-aside .h{font-size:.7rem;font-weight:900;text-transform:uppercase;letter-spacing:.4px;color:#0f766e;margin-bottom:4px;}',
+        'body.dark-mode .ivo-aside .h{color:#5eead4;}',
+        '.ivo-aside .r{display:flex;justify-content:space-between;gap:8px;font-size:.74rem;padding:4px 0;border-bottom:1px dashed rgba(13,148,136,.25);}',
+        '.ivo-aside .r:last-child{border-bottom:none;}',
+        '.ivo-aside .r span{color:var(--ivp-mute,#64748b);font-weight:700;}.ivo-aside .r b{font-weight:800;text-align:right;}',
+        '.ivp-tag.ivo-tag{background:rgba(13,148,136,.12)!important;color:#0f766e!important;}',
+        'body.dark-mode .ivp-tag.ivo-tag{color:#5eead4!important;}',
+        '.ivo-ttag{display:inline-block;margin-top:3px;font-size:.66rem;font-weight:800;padding:1px 7px;border-radius:8px;background:rgba(13,148,136,.12);color:#0f766e;white-space:nowrap;}',
+        '.ivo-month{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;border:1.5px solid rgba(13,148,136,.3);background:rgba(13,148,136,.06);border-radius:12px;padding:9px 13px;margin-bottom:12px;font-size:.78rem;font-weight:700;}',
+        '.ivo-month b{color:#0f766e;font-weight:900;}',
+        'body.dark-mode .ivo-month b{color:#5eead4;}',
+        '@media (max-width:520px){.ivo-modes{grid-template-columns:repeat(2,1fr);}}'
+    ].join('\n');
+    document.head.appendChild(css);
+
+    /* ───────────── Formulaire (commun « Nouvel achat » / fiche achat) ───────────── */
+    function formHTML(P, isEdit) {
+        return '<div class="ivo-wrap" id="' + P + '-wrap">'
+            + '<label class="ivo-sw"><input type="checkbox" id="' + P + '-on"><span><b>' + (isEdit ? 'Ajouter une sortie de marchandises' : 'Une partie de cette marchandise est ressortie') + '</b>'
+            + '<small>Revente, cession… La quantité sort du stock et le montant obtenu est injecté automatiquement dans le solde (espèces, CB, virement ou chèque).</small></span></label>'
+            + '<div class="ivo-body">'
+            + '<div class="ivm-g2">'
+            + '<div><label class="ivm-lbl" for="' + P + '-qte">📦 Quantité sortie <span id="' + P + '-u"></span></label>'
+            + '<div class="ivo-qrow"><input type="number" id="' + P + '-qte" min="0" step="any" placeholder="ex. 5"><button type="button" class="ivo-all" data-ivo="all" title="Reprendre toute la quantité achetée">Tout</button></div></div>'
+            + '<div><label class="ivm-lbl" for="' + P + '-mt">💶 Montant obtenu (€)</label>'
+            + '<input type="number" id="' + P + '-mt" min="0" step="0.01" placeholder="0.00">'
+            + '<div class="ivo-chips" id="' + P + '-chips"></div></div>'
+            + '</div>'
+            + '<div><label class="ivm-lbl">💳 Montant reçu par</label><div class="ivo-modes" id="' + P + '-modes">'
+            + ORDER.map(function (k) { return '<button type="button" data-m="' + k + '"><span>' + MODES[k].i + '</span>' + MODES[k].l + '</button>'; }).join('')
+            + '</div></div>'
+            + '<div><label class="ivm-lbl" for="' + P + '-motif">📝 Motif / client (facultatif)</label><input type="text" id="' + P + '-motif" maxlength="80" placeholder="ex. revente à un confrère, client Dupont…"></div>'
+            + '<div class="ivo-sum" id="' + P + '-sum"></div>'
+            + (isEdit ? '<div class="ivo-actions"><button type="button" class="go" data-ivo="save">📤 Enregistrer la sortie</button></div>' : '')
+            + '</div></div>';
+    }
+    var state = { n: { mode: null }, e: { mode: null } };
+
+    function wire(P, S, ctxFn, onChange) {
+        var wrap = $(P + '-wrap'); if (!wrap || wrap._ivoWired) return; wrap._ivoWired = true;
+        $(P + '-on').addEventListener('change', function () {
+            wrap.classList.toggle('on', this.checked);
+            if (this.checked) setTimeout(function () { var q = $(P + '-qte'); if (q) q.focus(); }, 30);
+            onChange();
+        });
+        wrap.addEventListener('input', onChange);
+        wrap.addEventListener('click', function (ev) {
+            var m = ev.target.closest('[data-m]');
+            if (m) { S.mode = S.mode === m.getAttribute('data-m') ? null : m.getAttribute('data-m'); onChange(); return; }
+            var a = ev.target.closest('[data-ivo="all"]');
+            if (a) { var c = ctxFn(); if (c.qte > 0) { $(P + '-qte').value = c.unit === 'kg' ? r3(c.qte) : c.qte; onChange(); } else toast('Saisissez d’abord la quantité achetée', 'info'); return; }
+            var ch = ev.target.closest('[data-amt]');
+            if (ch) { $(P + '-mt').value = (+ch.getAttribute('data-amt')).toFixed(2); onChange(); }
+        });
+    }
+    function resetForm(P, S) {
+        S.mode = null;
+        var on = $(P + '-on'); if (on) on.checked = false;
+        var w = $(P + '-wrap'); if (w) w.classList.remove('on');
+        ['-qte', '-mt', '-motif'].forEach(function (s) { var x = $(P + s); if (x) x.value = ''; });
+    }
+    function read(P, S) {
+        var on = $(P + '-on');
+        return { on: !!(on && on.checked), qte: num(($(P + '-qte') || {}).value), mt: num(($(P + '-mt') || {}).value), mode: S.mode, motif: String(($(P + '-motif') || {}).value || '').trim().slice(0, 80) };
+    }
+    // ctx = { qte (quantité achetée), unit, pu (prix d'achat unitaire), product, gift }
+    function analyse(f, c) {
+        var res = { alerts: [], err: null, cost: null, marge: null };
+        if (!f.on) return res;
+        if (f.qte < 0 || f.mt < 0) res.err = 'Les valeurs de la sortie ne peuvent pas être négatives';
+        else if (!(f.qte > 0) && !(f.mt > 0)) res.err = 'Sortie de marchandises : indiquez la quantité sortie et/ou le montant obtenu (ou décochez la sortie)';
+        else if (c.qte > 0 && f.qte > c.qte + 1e-9) res.err = 'La quantité sortie (' + fmtQ(f.qte, c.unit) + ') dépasse la quantité achetée (' + fmtQ(c.qte, c.unit) + ')';
+        else if (f.mt > 0 && !f.mode) res.err = 'Sortie de marchandises : choisissez comment le montant est reçu (espèces, CB, virement ou chèque)';
+        if (f.qte > 0 && c.pu > 0) { res.cost = r2(f.qte * c.pu); res.marge = r2(f.mt - res.cost); }
+        else if (f.qte > 0 && c.gift) { res.cost = 0; res.marge = r2(f.mt); }
+        if (res.err) res.alerts.push(['bad', '⚠️ ' + res.err]);
+        if (f.qte > 0 && !c.product) res.alerts.push(['info', '📝 Achat libre (non lié au catalogue) : la sortie est enregistrée sans modifier de stock.']);
+        if (f.qte > 0 && c.product && !(c.qte > 0)) res.alerts.push(['warn', '📦 Aucune quantité achetée saisie : la sortie sera retirée du stock actuel du produit.']);
+        if (res.marge != null && res.marge < 0) res.alerts.push(['warn', '📉 Sortie à perte : le montant obtenu est inférieur au coût d’achat de cette quantité.']);
+        if (f.mt === 0 && f.qte > 0) res.alerts.push(['info', 'ℹ️ Aucun montant : la marchandise sort du stock sans encaissement.']);
+        return res;
+    }
+    function sumHTML(f, c, a) {
+        var u = uLbl(c.unit), rows = [];
+        if (f.qte > 0) rows.push(['Quantité sortie', fmtQ(f.qte, c.unit)]);
+        if (f.qte > 0 && c.qte > 0) rows.push(['Quantité conservée', fmtQ(Math.max(0, c.qte - f.qte), c.unit)]);
+        if (c.product && f.qte > 0) {
+            var st = +c.product.stock || 0, after = c.stockAfterIn != null ? c.stockAfterIn : st;
+            rows.push(['Stock « ' + esc(c.product.name) + ' »', fmtQ(after, c.unit) + ' → <span class="' + (after - f.qte < 0 ? 'ivo-neg' : '') + '">' + fmtQ(after - f.qte, c.unit) + '</span>']);
+        }
+        if (f.qte > 0 && f.mt > 0) rows.push(['Prix obtenu', eur(f.mt / f.qte, c.unit === 'kg' ? 3 : 2) + ' / ' + u]);
+        if (a.cost != null) rows.push(['Coût d’achat de la sortie', eur(a.cost)]);
+        if (a.marge != null) rows.push(['Marge sur la sortie', '<span class="' + (a.marge >= 0 ? 'ivo-pos' : 'ivo-neg') + '">' + (a.marge >= 0 ? '+' : '') + eur(a.marge) + (a.cost > 0 ? ' (' + (a.marge >= 0 ? '+' : '') + Math.round(a.marge / a.cost * 100) + ' %)' : '') + '</span>']);
+        var h = rows.map(function (r) { return '<div class="r"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>'; }).join('');
+        if (f.mt > 0 && f.mode) h += '<div class="inj">' + MODES[f.mode].i + ' +' + eur(f.mt) + ' reçus par ' + MODES[f.mode].l.toLowerCase() + ' — injectés automatiquement dans le ' + MODES[f.mode].sol + '</div>';
+        else if (f.mt > 0) h += '<div class="inj" style="color:#b45309;">Choisissez le mode de réception du montant</div>';
+        h += a.alerts.map(function (x) { return '<div class="ivo-al ' + x[0] + '">' + x[1] + '</div>'; }).join('');
+        return h || '<div style="color:var(--ivp-mute,#64748b);font-weight:700;">Saisissez la quantité sortie et le montant obtenu.</div>';
+    }
+    function refresh(P, S, c) {
+        var w = $(P + '-wrap'); if (!w) return;
+        var f = read(P, S);
+        w.querySelectorAll('[data-m]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-m') === S.mode); });
+        var uu = $(P + '-u'); if (uu) uu.textContent = '(' + (c.unit === 'kg' ? 'kg' : 'unités') + (c.qte > 0 ? ' · achetées : ' + fmtQ(c.qte, c.unit) : '') + ')';
+        var q = $(P + '-qte'); if (q) q.step = c.unit === 'kg' ? '0.001' : '1';
+        var chips = $(P + '-chips');
+        if (chips) {
+            var sp = sellPrice(c.product), ch = '';
+            if (f.qte > 0 && sp > 0) ch += '<button type="button" data-amt="' + r2(f.qte * sp) + '" title="Quantité × prix de vente du produit">Au prix de vente · ' + eur(f.qte * sp) + '</button>';
+            if (f.qte > 0 && c.pu > 0) ch += '<button type="button" data-amt="' + r2(f.qte * c.pu) + '" title="Quantité × prix d’achat unitaire">Au prix d’achat · ' + eur(f.qte * c.pu) + '</button>';
+            chips.innerHTML = ch;
+        }
+        var s = $(P + '-sum'); if (s) s.innerHTML = sumHTML(f, c, analyse(f, c));
+    }
+
+    /* ───────────── Injection : stock + solde ───────────── */
+    function applySortie(entry, f, c, dateStr) {
+        var a = analyse(f, c);
+        var s = {
+            qte: f.qte > 0 ? (c.unit === 'kg' ? r3(f.qte) : r3(f.qte)) : 0, unit: c.unit === 'kg' ? 'kg' : 'unit',
+            montant: r2(f.mt), mode: f.mt > 0 ? f.mode : null, bucket: null, motif: f.motif || null,
+            date: dateStr || new Date().toISOString().slice(0, 10), datetime: new Date().toISOString(),
+            prixRevient: a.cost, marge: a.marge, stockApplied: false, user: userName()
+        };
+        var label = 'Sortie achat #' + (entry.numero || '') + ' — ' + (entry.desc || '') + (s.motif ? ' (' + s.motif + ')' : '');
+        // Stock du produit lié
+        if (s.qte > 0 && entry.produitId != null) {
+            try {
+                var prods = loadProducts(), i = prods.findIndex(function (p) { return String(p.id) === String(entry.produitId); });
+                if (i >= 0) {
+                    var p = prods[i], before = +p.stock || 0, after = parseFloat((before - s.qte).toFixed(s.unit === 'kg' ? 3 : 2));
+                    p.stock = after;
+                    if (!Array.isArray(p.stockHistory)) p.stockHistory = [];
+                    p.stockHistory.push({ date: s.datetime, type: 'sortie', before: before, after: after, delta: parseFloat((after - before).toFixed(3)),
+                        reason: '📤 ' + label + (s.montant > 0 ? ' · ' + eur(s.montant) : ''), user: s.user,
+                        meta: { source: 'investissement_pro', numero: entry.numero, kind: 'sortie', montant: s.montant, mode: s.mode } });
+                    if (p.stockHistory.length > 500) p.stockHistory = p.stockHistory.slice(-500);
+                    prods[i] = p;
+                    localStorage.setItem('covo_products', JSON.stringify(prods));
+                    dirty();
+                    s.stockApplied = true;
+                }
+            } catch (e) {}
+        }
+        // Solde réel (espèces / CB-banque)
+        if (s.montant > 0 && s.mode && MODES[s.mode] && typeof _covoRealBalanceAdjust === 'function') {
+            try { _covoRealBalanceAdjust(MODES[s.mode].b, s.montant, MODES[s.mode].i + ' ' + MODES[s.mode].l + ' reçu — ' + label); s.bucket = MODES[s.mode].b; } catch (e) {}
+        }
+        entry.sortie = s;
+        return s;
+    }
+    function revertSortie(entry, why) {
+        var s = entry && entry.sortie; if (!s) return;
+        var label = (why || 'Annulation sortie') + ' — achat #' + (entry.numero || '') + ' — ' + (entry.desc || '');
+        if (s.stockApplied && s.qte > 0 && entry.produitId != null) {
+            try {
+                var prods = loadProducts(), i = prods.findIndex(function (p) { return String(p.id) === String(entry.produitId); });
+                if (i >= 0) {
+                    var p = prods[i], before = +p.stock || 0, after = parseFloat((before + s.qte).toFixed(s.unit === 'kg' ? 3 : 2));
+                    p.stock = after;
+                    if (!Array.isArray(p.stockHistory)) p.stockHistory = [];
+                    p.stockHistory.push({ date: new Date().toISOString(), type: 'correction', before: before, after: after, delta: parseFloat((after - before).toFixed(3)),
+                        reason: '↩️ ' + label, user: userName(), meta: { source: 'investissement_pro', numero: entry.numero, kind: 'sortie-annulee' } });
+                    prods[i] = p; localStorage.setItem('covo_products', JSON.stringify(prods)); dirty();
+                }
+            } catch (e) {}
+        }
+        if (s.bucket && s.montant > 0 && typeof _covoRealBalanceAdjust === 'function') {
+            try { _covoRealBalanceAdjust(s.bucket, -s.montant, '↩️ ' + label); } catch (e) {}
+        }
+        delete entry.sortie;
+    }
+    function doneToast(s, entry) {
+        var parts = [];
+        if (s.qte > 0) parts.push(fmtQ(s.qte, s.unit) + (s.stockApplied ? ' retiré(s) du stock' : ' sorti(s)'));
+        if (s.montant > 0 && s.mode) parts.push(MODES[s.mode].i + ' +' + eur(s.montant) + ' injectés dans le ' + MODES[s.mode].sol);
+        toast('📤 Sortie enregistrée (achat #' + (entry.numero || '') + ') : ' + parts.join(' · '), 'success');
+    }
+
+    /* ───────────── « Nouvel achat » ───────────── */
+    function newCtx() {
+        var unit = window._invMSelectedUnit || 'unit', gift = window._invMSelectedPay === 'offert';
+        var qte = num(($('inv-m-qte') || {}).value), mt = gift ? 0 : num(($('inv-m-montant') || {}).value);
+        var p = findProduct(window._invMLinkedProductId);
+        return { qte: qte, unit: unit, pu: qte > 0 && mt > 0 ? mt / qte : 0, product: p, gift: gift, stockAfterIn: p ? (+p.stock || 0) + qte : null };
+    }
+    function newRefresh() { refresh('ivo-n', state.n, newCtx()); }
+    function ensureNewSection() {
+        if ($('ivo-n-wrap')) return;
+        var comment = $('inv-m-comment'); if (!comment) return;
+        var noteSec = comment.closest('.ivm-sec');
+        var sec = document.createElement('section');
+        sec.className = 'ivm-sec ivo-sec';
+        sec.innerHTML = '<div class="ivm-sh"><i>' + (noteSec ? '5' : '📤') + '</i>📤 Sortie de marchandises<small>facultatif · revente d’une partie de cet achat</small></div>' + formHTML('ivo-n', false);
+        if (noteSec && noteSec.parentNode) {
+            noteSec.parentNode.insertBefore(sec, noteSec);
+            var ni = noteSec.querySelector('.ivm-sh i'); if (ni) ni.textContent = '6';
+        } else {
+            var host = comment.parentNode; host.parentNode.insertBefore(sec, host.nextSibling);
+        }
+        wire('ivo-n', state.n, newCtx, newRefresh);
+        // Récapitulatif (colonne de droite) : bloc « Sortie » ajouté à chaque mise à jour
+        var aside = $('ivm-aside');
+        if (aside && window.MutationObserver) {
+            new MutationObserver(function () { if (!aside.querySelector('.ivo-aside')) asideBlock(aside); }).observe(aside, { childList: true });
+        }
+    }
+    function asideBlock(aside) {
+        var f = read('ivo-n', state.n); if (!f.on) return;
+        var c = newCtx(), a = analyse(f, c), rows = [];
+        if (f.qte > 0) rows.push(['Quantité sortie', fmtQ(f.qte, c.unit)]);
+        if (f.mt > 0) rows.push(['Montant obtenu', '+' + eur(f.mt) + (f.mode ? ' · ' + MODES[f.mode].i + ' ' + MODES[f.mode].l : '')]);
+        if (a.marge != null) rows.push(['Marge sur la sortie', '<span class="' + (a.marge >= 0 ? 'ivo-pos' : 'ivo-neg') + '">' + (a.marge >= 0 ? '+' : '') + eur(a.marge) + '</span>']);
+        if (c.product && f.qte > 0) rows.push(['Stock final', fmtQ((c.stockAfterIn || 0) - f.qte, c.unit)]);
+        var mt = c.gift ? 0 : num(($('inv-m-montant') || {}).value);
+        if (f.mt > 0 && mt > 0) rows.push(['Coût net de l’achat', eur(mt - f.mt)]);
+        if (a.err) rows.push(['À compléter', '<span class="ivo-neg">' + esc(a.err.replace(/^Sortie de marchandises : /, '')) + '</span>']);
+        if (!rows.length) rows.push(['Sortie', 'à renseigner']);
+        var d = document.createElement('div');
+        d.className = 'ivo-aside';
+        d.innerHTML = '<div class="h">📤 Sortie de marchandises</div>' + rows.map(function (r) { return '<div class="r"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>'; }).join('');
+        var chk = aside.querySelector('.ivr-check');
+        if (chk) aside.insertBefore(d, chk); else aside.appendChild(d);
+    }
+    // Les valeurs de l'achat (qté, montant, produit, paiement) changent le résumé de la sortie
+    document.addEventListener('input', function (e) { if (e.target && e.target.closest && e.target.closest('#inv-add-modal') && !e.target.closest('#ivo-n-wrap')) setTimeout(newRefresh, 40); }, true);
+    document.addEventListener('click', function (e) { if (e.target && e.target.closest && e.target.closest('#inv-add-modal') && !e.target.closest('#ivo-n-wrap')) setTimeout(newRefresh, 60); }, true);
+    document.addEventListener('change', function (e) { if (e.target && e.target.closest && e.target.closest('#inv-add-modal') && !e.target.closest('#ivo-n-wrap')) setTimeout(newRefresh, 60); }, true);
+
+    var prevOpen = window.invOpenAddModal;
+    if (typeof prevOpen === 'function') window.invOpenAddModal = function () {
+        var r = prevOpen.apply(this, arguments);
+        try { ensureNewSection(); resetForm('ivo-n', state.n); newRefresh(); if (typeof window._ivmRecap === 'function') window._ivmRecap(); } catch (e) { console.warn('[sortie]', e); }
+        return r;
+    };
+
+    var prevSubmit = window.invModalSubmit;
+    if (typeof prevSubmit === 'function') window.invModalSubmit = function () {
+        var f = read('ivo-n', state.n), c = newCtx(), a = analyse(f, c);
+        var want = f.on && !a.err;
+        if (f.on && a.err) {
+            toast(a.err, 'info');
+            var w = $('ivo-n-wrap'); if (w && w.scrollIntoView) w.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return;
+        }
+        var dateStr = ($('inv-m-date') || {}).value || '';
+        var ids = {}; loadList().forEach(function (x) { ids[x.id] = 1; });
+        var r = prevSubmit.apply(this, arguments);
+        if (!want) return r;
+        var list = loadList(), idx = -1;
+        for (var i = 0; i < list.length; i++) if (!ids[list[i].id]) { idx = i; break; }
+        if (idx < 0) return r;                                               // achat refusé : rien à faire
+        var e = list[idx];
+        // Coût réel calculé sur le prix unitaire enregistré
+        if (e.prixUnit > 0) c.pu = +e.prixUnit;
+        if (e.qte > 0) c.qte = +e.qte;
+        var s = applySortie(e, f, c, dateStr || e.date);
+        list[idx] = e; saveList(list);
+        rerender();
+        setTimeout(function () { doneToast(s, e); }, 350);
+        return r;
+    };
+
+    /* ───────────── Fiche d'un achat existant ───────────── */
+    var curEdit = null;
+    function editEntry() { var id = curEdit || (($('inv-edit-id') || {}).value); if (!id) return null; return loadList().find(function (x) { return x.id === id; }) || null; }
+    function editCtx() {
+        var e = editEntry() || {}, p = findProduct(e.produitId), unit = e.unitType || 'unit';
+        var qte = +e.qte || 0, pu = +e.prixUnit || (qte > 0 && e.montant > 0 ? e.montant / qte : 0);
+        return { qte: qte, unit: unit, pu: pu, product: p, gift: e.paiement === 'offert', stockAfterIn: p ? (+p.stock || 0) : null };
+    }
+    function editRefresh() { refresh('ivo-e', state.e, editCtx()); }
+    function ensureEditSection() {
+        if ($('ivo-e-host')) return $('ivo-e-host');
+        var note = $('inv-edit-note'); if (!note) return null;
+        var noteSec = note.closest('.ivm-sec');
+        var sec = document.createElement('section');
+        sec.className = 'ivm-sec ivo-sec';
+        sec.innerHTML = '<div class="ivm-sh"><i>' + (noteSec ? '5' : '📤') + '</i>📤 Sortie de marchandises<small>revente d’une partie de cet achat</small></div><div id="ivo-e-host"></div>';
+        if (noteSec && noteSec.parentNode) { noteSec.parentNode.insertBefore(sec, noteSec); var ni = noteSec.querySelector('.ivm-sh i'); if (ni) ni.textContent = '6'; }
+        else { var h = note.parentNode; h.parentNode.insertBefore(sec, h.nextSibling); }
+        sec.addEventListener('click', function (ev) {
+            if (ev.target.closest('[data-ivo="save"]')) { ev.preventDefault(); saveEditSortie(); }
+            else if (ev.target.closest('[data-ivo="undo"]')) { ev.preventDefault(); undoEditSortie(); }
+        });
+        return $('ivo-e-host');
+    }
+    function renderEdit() {
+        var host = ensureEditSection(); if (!host) return;
+        var e = editEntry(); if (!e) { host.innerHTML = ''; return; }
+        var s = e.sortie;
+        if (s) {
+            var unit = s.unit === 'kg' ? 'kg' : 'unit', rows = [];
+            rows.push(['Date', (function () { try { return new Date((s.date || '').length === 10 ? s.date + 'T12:00:00' : s.datetime).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' }); } catch (x) { return s.date || '—'; } })()]);
+            if (s.qte > 0) rows.push(['Quantité sortie', fmtQ(s.qte, unit) + (s.stockApplied ? ' · retirée du stock' : '')]);
+            rows.push(['Montant obtenu', s.montant > 0 ? '+' + eur(s.montant) : '—']);
+            if (s.mode && MODES[s.mode]) rows.push(['Reçu par', MODES[s.mode].i + ' ' + MODES[s.mode].l + (s.bucket ? ' · injecté dans le ' + MODES[s.mode].sol : '')]);
+            if (s.prixRevient != null) rows.push(['Coût d’achat de la sortie', eur(s.prixRevient)]);
+            if (s.marge != null) rows.push(['Marge', '<span class="' + (s.marge >= 0 ? 'ivo-pos' : 'ivo-neg') + '">' + (s.marge >= 0 ? '+' : '') + eur(s.marge) + '</span>']);
+            if (s.motif) rows.push(['Motif / client', esc(s.motif)]);
+            host.innerHTML = '<div class="ivo-card"><div class="t">📤 Sortie enregistrée</div><div class="ivo-sum" style="background:transparent;border:none;padding:0;">'
+                + rows.map(function (r) { return '<div class="r"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>'; }).join('') + '</div>'
+                + '<div class="ivo-actions"><button type="button" class="undo" data-ivo="undo" title="Remet la quantité en stock et retire le montant du solde">↩️ Annuler cette sortie</button></div></div>';
+        } else {
+            host.innerHTML = formHTML('ivo-e', true);
+            state.e.mode = null;
+            wire('ivo-e', state.e, editCtx, editRefresh);
+            editRefresh();
+        }
+    }
+    function saveEditSortie() {
+        var list = loadList(), id = curEdit || (($('inv-edit-id') || {}).value), i = list.findIndex(function (x) { return x.id === id; });
+        if (i < 0) return;
+        var e = list[i];
+        if (e.sortie) { toast('Cet achat a déjà une sortie enregistrée', 'info'); return; }
+        var f = read('ivo-e', state.e), c = editCtx(), a = analyse(f, c);
+        if (!f.on) { toast('Cochez « Ajouter une sortie de marchandises »', 'info'); return; }
+        if (a.err) { toast(a.err, 'info'); return; }
+        var s = applySortie(e, f, c, new Date().toISOString().slice(0, 10));
+        list[i] = e; saveList(list);
+        renderEdit(); rerender();
+        doneToast(s, e);
+    }
+    function undoEditSortie() {
+        var list = loadList(), id = curEdit || (($('inv-edit-id') || {}).value), i = list.findIndex(function (x) { return x.id === id; });
+        if (i < 0 || !list[i].sortie) return;
+        var s = list[i].sortie;
+        var msg = 'Annuler la sortie de cet achat ?\n\n'
+            + (s.stockApplied && s.qte > 0 ? '• ' + fmtQ(s.qte, s.unit === 'kg' ? 'kg' : 'unit') + ' remis en stock\n' : '')
+            + (s.bucket && s.montant > 0 ? '• ' + eur(s.montant) + ' retirés du ' + MODES[s.mode].sol + '\n' : '');
+        if (!window.confirm(msg)) return;
+        revertSortie(list[i], 'Annulation sortie');
+        saveList(list);
+        renderEdit(); rerender();
+        toast('↩️ Sortie annulée — stock et solde rétablis', 'success');
+    }
+    var prevOpenEdit = window.invOpenEdit;
+    if (typeof prevOpenEdit === 'function') window.invOpenEdit = function (id) {
+        curEdit = id;
+        var r = prevOpenEdit.apply(this, arguments);
+        try { renderEdit(); } catch (e) { console.warn('[sortie]', e); }
+        return r;
+    };
+
+    /* ───────────── Suppression d'un achat : montant encaissé retiré du solde ───────────── */
+    var prevDelete = window.invDelete;
+    if (typeof prevDelete === 'function') window.invDelete = function (id) {
+        var e = loadList().find(function (x) { return x.id === id; });
+        var r = prevDelete.apply(this, arguments);
+        try {
+            var gone = !loadList().some(function (x) { return x.id === id; });
+            if (gone && e && e.sortie && e.sortie.bucket && e.sortie.montant > 0 && typeof _covoRealBalanceAdjust === 'function') {
+                _covoRealBalanceAdjust(e.sortie.bucket, -e.sortie.montant, '↩️ Suppression achat #' + (e.numero || '') + ' — annulation de la sortie encaissée');
+            }
+        } catch (er) {}
+        return r;
+    };
+
+    /* ───────────── Liste : badge « Sortie » + bilan du mois ───────────── */
+    function tagText(s) { return '📤 Sortie' + (s.qte > 0 ? ' ' + fmtQ(s.qte, s.unit === 'kg' ? 'kg' : 'unit') : '') + (s.montant > 0 ? ' · +' + eur(s.montant) : ''); }
+    function tagTitle(s) { return 'Sortie de marchandises' + (s.mode && MODES[s.mode] ? ' — reçu par ' + MODES[s.mode].l : '') + (s.marge != null ? ' — marge ' + (s.marge >= 0 ? '+' : '') + eur(s.marge) : '') + (s.motif ? ' — ' + s.motif : ''); }
+    var prevCard = window.invBuildCard;
+    if (typeof prevCard === 'function') window.invBuildCard = function (e) {
+        var h = prevCard.apply(this, arguments);
+        try {
+            if (e && e.sortie && typeof h === 'string') {
+                var tag = '<span class="ivp-tag ivo-tag" title="' + esc(tagTitle(e.sortie)) + '">' + esc(tagText(e.sortie)) + '</span>';
+                var k = h.indexOf('</div><div class="ivp-l2">');
+                h = k >= 0 ? h.slice(0, k) + tag + h.slice(k) : h;
+            }
+        } catch (er) {}
+        return h;
+    };
+    function decorateTable() {
+        var tb = $('inv-table-tbody'); if (!tb) return;
+        var map = {}; loadList().forEach(function (x) { if (x.sortie) map[x.id] = x.sortie; });
+        tb.querySelectorAll('tr[onclick]').forEach(function (tr) {
+            var m = /invOpenEdit\('((?:[^'\\]|\\.)*)'\)/.exec(tr.getAttribute('onclick') || ''); if (!m) return;
+            var s = map[m[1].replace(/\\'/g, "'")]; if (!s || tr.querySelector('.ivo-ttag')) return;
+            var td = tr.children[2]; if (!td) return;
+            td.insertAdjacentHTML('beforeend', '<br><span class="ivo-ttag" title="' + esc(tagTitle(s)) + '">' + esc(tagText(s)) + '</span>');
+        });
+    }
+    if (typeof window._invRenderTable === 'function') {
+        var prevTable = window._invRenderTable;
+        window._invRenderTable = function () { var r = prevTable.apply(this, arguments); try { decorateTable(); } catch (e) {} return r; };
+    }
+    function monthBanner() {
+        var ins = $('inv-insights'); if (!ins) return;
+        var old = ins.querySelector('.ivo-month'); if (old) old.remove();
+        var month = (($('inv-filter-month') || {}).value) || new Date().toISOString().slice(0, 7);
+        var xs = loadList().filter(function (x) { return x.sortie && String(x.sortie.date || x.date || '').slice(0, 7) === month; });
+        if (!xs.length) return;
+        var tot = 0, marge = 0, hasM = false, by = {};
+        xs.forEach(function (x) { tot += +x.sortie.montant || 0; if (x.sortie.marge != null) { marge += +x.sortie.marge; hasM = true; } if (x.sortie.mode) by[x.sortie.mode] = (by[x.sortie.mode] || 0) + (+x.sortie.montant || 0); });
+        var d = document.createElement('div');
+        d.className = 'ivo-month';
+        d.innerHTML = '<span>📤 Sorties de marchandises ce mois : <b>' + xs.length + '</b></span><span>Encaissé : <b>+' + eur(tot) + '</b></span>'
+            + (hasM ? '<span>Marge : <b class="' + (marge >= 0 ? 'ivo-pos' : 'ivo-neg') + '">' + (marge >= 0 ? '+' : '') + eur(marge) + '</b></span>' : '')
+            + ORDER.filter(function (k) { return by[k] > 0; }).map(function (k) { return '<span>' + MODES[k].i + ' ' + MODES[k].l + ' ' + eur(by[k]) + '</span>'; }).join('');
+        ins.insertBefore(d, ins.firstChild);
+    }
+    var prevRender = window.invRender;
+    if (typeof prevRender === 'function') window.invRender = function () {
+        var r = prevRender.apply(this, arguments);
+        try { decorateTable(); monthBanner(); } catch (e) {}
+        return r;
+    };
+    function start() { try { if ($('inv-list')) { decorateTable(); monthBanner(); } } catch (e) {} }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(start, 400); }); else setTimeout(start, 400);
+})();
+</script>
 </body>
 </html>
