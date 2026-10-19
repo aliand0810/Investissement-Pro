@@ -5799,6 +5799,9 @@ window.cpMaybeShowInstallBanner = function(){
         '.ivo-ttag{display:inline-block;margin-top:3px;font-size:.66rem;font-weight:800;padding:1px 7px;border-radius:8px;background:rgba(13,148,136,.12);color:#0f766e;white-space:nowrap;}',
         '.ivo-month{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;border:1.5px solid rgba(13,148,136,.3);background:rgba(13,148,136,.06);border-radius:12px;padding:9px 13px;margin-bottom:12px;font-size:.78rem;font-weight:700;}',
         '.ivo-month b{color:#0f766e;font-weight:900;}',
+        '.ivo-month .ivo-calc{flex-basis:100%;font-size:.84rem;}',
+        '.ivo-month b.ivo-neg{color:#dc2626;}.ivo-month b.ivo-pos{color:#15803d;}',
+        'body.dark-mode .ivo-month b.ivo-neg{color:#fca5a5;}body.dark-mode .ivo-month b.ivo-pos{color:#86efac;}',
         'body.dark-mode .ivo-month b{color:#5eead4;}',
         '@media (max-width:520px){.ivo-modes{grid-template-columns:repeat(2,1fr);}}'
     ].join('\n');
@@ -6184,9 +6187,12 @@ window.cpMaybeShowInstallBanner = function(){
         if (!xs.length) return;
         var tot = 0, marge = 0, hasM = false, by = {};
         xs.forEach(function (x) { tot += +x.sortie.montant || 0; if (x.sortie.marge != null) { marge += +x.sortie.marge; hasM = true; } if (x.sortie.mode) by[x.sortie.mode] = (by[x.sortie.mode] || 0) + (+x.sortie.montant || 0); });
+        var dep = loadList().filter(function (x) { return String(x.date || '').slice(0, 7) === month; }).reduce(function (s, x) { return s + (+x.montant || 0); }, 0);
+        var net = r2(tot - dep);
         var d = document.createElement('div');
         d.className = 'ivo-month';
-        d.innerHTML = '<span>📤 Sorties de marchandises ce mois : <b>' + xs.length + '</b></span><span>Encaissé : <b>+' + eur(tot) + '</b></span>'
+        d.innerHTML = '<span class="ivo-calc">💼 Dépenses <b class="ivo-neg">−' + eur(dep) + '</b> + 📤 Sorties <b class="ivo-pos">+' + eur(tot) + '</b> = Résultat net <b class="' + (net >= 0 ? 'ivo-pos' : 'ivo-neg') + '">' + (net > 0 ? '+' : net < 0 ? '−' : '') + eur(Math.abs(net)) + '</b></span>'
+            + '<span>📤 ' + xs.length + ' sortie' + (xs.length > 1 ? 's' : '') + ' ce mois</span>'
             + (hasM ? '<span>Marge : <b class="' + (marge >= 0 ? 'ivo-pos' : 'ivo-neg') + '">' + (marge >= 0 ? '+' : '') + eur(marge) + '</b></span>' : '')
             + ORDER.filter(function (k) { return by[k] > 0; }).map(function (k) { return '<span>' + MODES[k].i + ' ' + MODES[k].l + ' ' + eur(by[k]) + '</span>'; }).join('');
         ins.insertBefore(d, ins.firstChild);
@@ -6199,6 +6205,140 @@ window.cpMaybeShowInstallBanner = function(){
     };
     function start() { try { if ($('inv-list')) { decorateTable(); monthBanner(); } } catch (e) {} }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(start, 400); }); else setTimeout(start, 400);
+})();
+</script>
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   APPROVISIONNEMENT PRO — RÉSULTAT NET DU MOIS (dépenses + sorties de marchandises)
+   Les sorties (reventes) sont comptabilisées dans le mois où elles ont lieu :
+       dépenses du mois (négatif)  +  sorties encaissées (positif)  =  résultat net
+       ex. −3 000,00 € + 2 500,00 € = −500,00 €
+   • Indicateur principal « Dépenses » → « Résultat net des achats » avec le détail du calcul
+   • CA du mois : le solde est calculé sur les achats nets
+   • Total de la liste filtrée, sous-titre de la page, montant de chaque achat (net de sa sortie)
+   ════════════════════════════════════════════════════════════════════════ */
+(function () {
+    'use strict';
+    if (window._ivnInstalled) return;
+    window._ivnInstalled = true;
+
+    function $(id) { return document.getElementById(id); }
+    function eur(v, d) { v = +v || 0; return v.toLocaleString('fr-FR', { minimumFractionDigits: d == null ? 2 : d, maximumFractionDigits: d == null ? 2 : d }) + ' €'; }
+    function r2(v) { return Math.round((+v || 0) * 100) / 100; }
+    function sgn(v, d) { v = r2(v); return (v > 0 ? '+' : v < 0 ? '−' : '') + eur(Math.abs(v), d); }
+    function cls(v) { return r2(v) >= 0 ? 'ivn-pos' : 'ivn-neg'; }
+    function loadList() { try { return (typeof invLoad === 'function') ? invLoad() : (JSON.parse(localStorage.getItem('covo_approvisionnements')) || []); } catch (e) { return []; } }
+    function curMonth() { return (($('inv-filter-month') || {}).value) || new Date().toISOString().slice(0, 7); }
+    function sMonth(e) { return String((e.sortie && e.sortie.date) || e.date || '').slice(0, 7); }
+    function filtersOn() { return ['inv-filter-cat', 'inv-filter-fourn', 'inv-filter-pay', 'inv-search'].some(function (id) { var x = $(id); return !!(x && String(x.value || '').trim()); }); }
+    function depOf(list, month) { return list.filter(function (e) { return String(e.date || '').indexOf(month) === 0; }).reduce(function (s, e) { return s + (+e.montant || 0); }, 0); }
+    function sortOf(list, month) { return list.filter(function (e) { return e.sortie && (+e.sortie.montant || 0) > 0 && sMonth(e) === month; }).reduce(function (s, e) { return s + (+e.sortie.montant || 0); }, 0); }
+    // Totaux du mois : avec filtres actifs → uniquement les achats affichés ; sinon → tout le mois
+    window._invMonthNet = function (month, filtered) {
+        month = month || curMonth();
+        var src = (filtersOn() && Array.isArray(filtered)) ? filtered : loadList();
+        var dep = r2(filtered && filtersOn() ? filtered.reduce(function (s, e) { return s + (+e.montant || 0); }, 0) : depOf(src, month));
+        var so = r2(sortOf(src, month));
+        return { depenses: dep, sorties: so, net: r2(so - dep) };
+    };
+
+    var css = document.createElement('style');
+    css.id = 'ivn-css';
+    css.textContent = [
+        '.ivn-pos{color:#15803d!important;}.ivn-neg{color:#dc2626!important;}',
+        'body.dark-mode .ivn-pos{color:#86efac!important;}body.dark-mode .ivn-neg{color:#fca5a5!important;}',
+        '.ivp-kpi.hero .ivn-calc{display:flex;flex-wrap:wrap;gap:2px 10px;font-size:.72rem;font-weight:800;margin-top:2px;}',
+        '.ivp-kpi.hero .ivn-calc span{white-space:nowrap;}',
+        '.ivp-kpi.hero .ivn-calc .op{opacity:.75;}',
+        '.ivp-kpi.hero .ivn-hn{color:#fecaca;}.ivp-kpi.hero .ivn-hp{color:#bbf7d0;}',
+        '.ivp-kpi.hero.ivn-gain{background:linear-gradient(135deg,#065f46,#0d9488)!important;}',
+        '.ivp-amt small.ivn-line{font-weight:800;}',
+        '.ivp-total.ivn-total{background:var(--ivp-card,#fff)!important;border:1px solid var(--ivp-line,#e5e7eb)!important;color:var(--text-main,#2c3e50)!important;}',
+        '.ivn-tnet{display:inline-block;margin-top:3px;font-size:.66rem;font-weight:800;white-space:nowrap;}'
+    ].join('\n');
+    document.head.appendChild(css);
+
+    /* ───────────── Indicateurs du mois ───────────── */
+    var prevStats = window.invUpdateStatsRow;
+    if (typeof prevStats === 'function') window.invUpdateStatsRow = function (filtered, month) {
+        var r = prevStats.apply(this, arguments);
+        try {
+            month = month || curMonth();
+            var t = window._invMonthNet(month, filtered);
+            if (!(t.sorties > 0)) return r;                       // aucune sortie ce mois : affichage inchangé
+            var row = $('inv-stats-row'); if (!row) return r;
+            var hero = row.querySelector('.ivp-kpi.hero') || row.firstElementChild;
+            if (hero) {
+                var k = hero.querySelector('.k'), v = hero.querySelector('.v'), s = hero.querySelector('.s');
+                if (k) k.innerHTML = k.innerHTML.replace(/Dépenses/, 'Résultat net des achats');
+                if (v) { v.textContent = sgn(t.net); hero.classList.toggle('ivn-gain', t.net > 0); v.title = 'Dépenses ' + sgn(-t.depenses) + ' + sorties ' + sgn(t.sorties) + ' = ' + sgn(t.net); }
+                if (s) s.innerHTML = '<span class="ivn-calc"><span>💼 Dépenses <b class="ivn-hn">' + sgn(-t.depenses) + '</b></span><span class="op">+</span><span>📤 Sorties <b class="ivn-hp">' + sgn(t.sorties) + '</b></span></span>';
+            }
+            // CA du mois : solde calculé sur les achats nets (tout le mois)
+            var all = window._invMonthNet(month, null);
+            Array.prototype.forEach.call(row.querySelectorAll('.ivp-kpi'), function (kp) {
+                var kk = kp.querySelector('.k'); if (!kk || !/CA du mois/.test(kk.textContent)) return;
+                var sales = []; try { sales = JSON.parse(localStorage.getItem('covo_sales_history') || localStorage.getItem('covo_sales') || '[]') || []; } catch (e) {}
+                var ca = sales.filter(function (x) { return !x.cancelled && String(x.date || '').indexOf(month) === 0; }).reduce(function (a, x) { return a + (parseFloat(x.total) || 0); }, 0);
+                var achatsNets = -all.net, ss = kp.querySelector('.s');
+                if (ss && ca > 0) ss.innerHTML = (achatsNets > 0 ? 'Achats nets = ' + Math.round(achatsNets / ca * 100) + ' % du CA' : 'Sorties supérieures aux achats') + ' · solde <b class="' + cls(ca + all.net) + '">' + sgn(ca + all.net, 0) + '</b>';
+            });
+            var sub = $('ivp-hero-sub');
+            if (sub && sub.textContent.indexOf('net ') < 0) sub.textContent += ' · sorties ' + sgn(t.sorties) + ' · net ' + sgn(t.net);
+        } catch (e) { console.warn('[net]', e); }
+        return r;
+    };
+
+    /* ───────────── Total de la liste ───────────── */
+    function listTotal() {
+        var el = $('inv-filter-total'); if (!el) return;
+        var month = curMonth(), list = loadList();
+        var shown = list.filter(function (e) { return String(e.date || '').indexOf(month) === 0; });
+        var t = window._invMonthNet(month, filtersOn() ? (window._invLastFiltered || (typeof _invLastFiltered !== 'undefined' ? _invLastFiltered : shown)) : null);
+        el.classList.remove('ivn-total');
+        if (!(t.sorties > 0)) return;
+        el.innerHTML = 'Dépenses <b class="ivn-neg">' + sgn(-t.depenses) + '</b> + sorties <b class="ivn-pos">' + sgn(t.sorties) + '</b> = <b class="' + cls(t.net) + '">' + sgn(t.net) + '</b>';
+        el.classList.add('ivn-total');
+        el.title = 'Résultat net du mois : dépenses (négatif) + sorties de marchandises encaissées (positif)';
+    }
+
+    /* ───────────── Montant net sur chaque achat ───────────── */
+    var prevCard = window.invBuildCard;
+    if (typeof prevCard === 'function') window.invBuildCard = function (e) {
+        var h = prevCard.apply(this, arguments);
+        try {
+            if (e && e.sortie && (+e.sortie.montant || 0) > 0 && typeof h === 'string') {
+                var n = r2((+e.sortie.montant || 0) - (+e.montant || 0));
+                var line = '<small class="ivn-line ' + cls(n) + '" title="Achat ' + sgn(-(+e.montant || 0)) + ' + sortie ' + sgn(e.sortie.montant) + '">net ' + sgn(n) + '</small>';
+                var a = h.indexOf('<div class="ivp-amt">');
+                if (a >= 0) { var b = h.indexOf('</b>', a); if (b >= 0) h = h.slice(0, b + 4) + line + h.slice(b + 4); }
+            }
+        } catch (er) {}
+        return h;
+    };
+    function decorateTable() {
+        var tb = $('inv-table-tbody'); if (!tb) return;
+        var map = {}; loadList().forEach(function (x) { if (x.sortie && (+x.sortie.montant || 0) > 0) map[x.id] = x; });
+        tb.querySelectorAll('tr[onclick]').forEach(function (tr) {
+            var m = /invOpenEdit\('((?:[^'\\]|\\.)*)'\)/.exec(tr.getAttribute('onclick') || ''); if (!m) return;
+            var e = map[m[1].replace(/\\'/g, "'")]; if (!e || tr.querySelector('.ivn-tnet')) return;
+            var td = tr.children[5]; if (!td) return;
+            var n = r2((+e.sortie.montant || 0) - (+e.montant || 0));
+            td.insertAdjacentHTML('beforeend', '<br><span class="ivn-tnet ' + cls(n) + '">net ' + sgn(n) + '</span>');
+        });
+    }
+    if (typeof window._invRenderTable === 'function') {
+        var prevTable = window._invRenderTable;
+        window._invRenderTable = function () { var r = prevTable.apply(this, arguments); try { decorateTable(); } catch (e) {} return r; };
+    }
+    var prevRender = window.invRender;
+    if (typeof prevRender === 'function') window.invRender = function () {
+        var r = prevRender.apply(this, arguments);
+        try { listTotal(); decorateTable(); } catch (e) {}
+        return r;
+    };
+    function start() { try { if ($('inv-list') && typeof window.invRender === 'function') window.invRender(); } catch (e) {} }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(start, 500); }); else setTimeout(start, 500);
 })();
 </script>
 </body>
