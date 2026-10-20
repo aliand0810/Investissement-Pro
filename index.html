@@ -6579,5 +6579,372 @@ window.cpMaybeShowInstallBanner = function(){
     window._cpaAnomaly = anomaly;      // diagnostic
 })();
 </script>
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   APPROVISIONNEMENT PRO — RECHERCHE SUR TOUTE L'ANNÉE
+   • À côté de la recherche : « 📅 Mois » (affichage habituel) ou « 🗓️ Année » (+ choix de l'année
+     ou des 12 derniers mois)
+   • En mode Année, la recherche porte sur tous les achats de la période (désignation, produit,
+     fournisseur, n° d'achat, facture, code-barres, note) — les filtres Catégorie / Fournisseur /
+     Paiement restent actifs
+   • Sans recherche : la liste de tous les produits approvisionnés dans l'année (clic = détail)
+   • Avec recherche : synthèse du produit (achats, quantité, dépensé, prix moyen, meilleur prix,
+     dernier achat), dépenses mois par mois, évolution du prix unitaire, comparaison des
+     fournisseurs, liste détaillée (clic = fiche de l'achat) et export CSV
+   ════════════════════════════════════════════════════════════════════════ */
+(function () {
+    'use strict';
+    if (window._ivyInstalled) return;
+    window._ivyInstalled = true;
+    var LS = 'covo_inv_year_ui';
+    var st = { on: false, year: 'Y' + new Date().getFullYear(), pick: '', sort: 'date', dir: -1 };
+    try { var u0 = JSON.parse(localStorage.getItem(LS) || 'null'); if (u0 && u0.year) st.year = u0.year; } catch (e) {}
+    function save() { try { localStorage.setItem(LS, JSON.stringify({ year: st.year })); } catch (e) {} }
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function norm(s) { return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim(); }
+    function eur(v, d) { return (+v || 0).toLocaleString('fr-FR', { minimumFractionDigits: d == null ? 2 : d, maximumFractionDigits: d == null ? 2 : d }) + ' €'; }
+    function num(v, d) { return (+v || 0).toLocaleString('fr-FR', { maximumFractionDigits: d == null ? 2 : d }); }
+    var MO = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+    var PAY = { comptant: '💵 Comptant', cb: '💳 CB', cheque: '📄 Chèque', credit: '🔄 Crédit', offert: '🎁 Offert', virement: '🏦 Virement' };
+    function fmtD(iso) { if (!iso) return '—'; var p = String(iso).slice(0, 10).split('-'); return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : iso; }
+    function load() { try { if (typeof invLoad === 'function') return invLoad() || []; } catch (e) {} try { return JSON.parse(localStorage.getItem('covo_approvisionnements') || '[]') || []; } catch (e) { return []; } }
+    function unitP(e) { if (e.offert) return null; if (+e.prixUnit > 0) return +e.prixUnit; if (+e.qte > 0 && +e.montant > 0) return +e.montant / +e.qte; return null; }
+    function unitLbl(e) { return e.unitType === 'kg' ? 'kg' : 'u.'; }
+    function keyOf(e) { return e.produitId != null && e.produitId !== '' ? 'p:' + e.produitId : 'd:' + norm(String(e.produitNom || e.desc || 'Achat').replace(/\s*\(.*?\)\s*/g, ' ').replace(/\s+/g, ' ')); }
+    function nameOf(e) { return e.produitNom || e.desc || 'Achat'; }
+
+    /* ───────────── Période ───────────── */
+    function range() {
+        var now = new Date();
+        if (st.year === 'L12') {
+            var s = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+            var months = []; for (var i = 0; i < 12; i++) { var d = new Date(s.getFullYear(), s.getMonth() + i, 1); months.push(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')); }
+            return { from: months[0] + '-01', to: '9999', months: months, label: '12 derniers mois', short: '12 derniers mois' };
+        }
+        var y = parseInt(st.year.slice(1), 10) || now.getFullYear(), M = [];
+        for (var m = 1; m <= 12; m++) M.push(y + '-' + String(m).padStart(2, '0'));
+        return { from: y + '-01-01', to: y + '-12-31', months: M, label: 'année ' + y, short: String(y) };
+    }
+    function years() {
+        var Y = {}; Y[new Date().getFullYear()] = 1;
+        load().forEach(function (e) { var y = parseInt(String(e.date || '').slice(0, 4), 10); if (y > 1990 && y < 2200) Y[y] = 1; });
+        return Object.keys(Y).map(Number).sort(function (a, b) { return b - a; });
+    }
+
+    /* ───────────── Sélection ───────────── */
+    function selection() {
+        var R = range(), q = norm(($('inv-search') || {}).value || ''), qRaw = (($('inv-search') || {}).value || '').trim();
+        var catF = ($('inv-filter-cat') || {}).value || '', fournF = ($('inv-filter-fourn') || {}).value || '', payF = ($('inv-filter-pay') || {}).value || '';
+        var inYear = load().filter(function (e) { var d = String(e.date || '').slice(0, 10); return d && d >= R.from && d <= R.to; });
+        var L = inYear.filter(function (e) {
+            if (catF && e.cat !== catF) return false;
+            if (fournF && (e.fournisseur || 'Non renseigné') !== fournF) return false;
+            if (payF && (e.paiement || '') !== payF) return false;
+            if (!q) return true;
+            var hay = norm([e.desc, e.produitNom, e.fournisseur, e.note, e.facture, e.produitBarcode].join(' | '));
+            return hay.indexOf(q) >= 0 || String(e.numero || '').indexOf(qRaw) >= 0;
+        });
+        return { R: R, q: qRaw, list: L, filtered: !!(catF || fournF || payF) };
+    }
+    function groupBy(L) {
+        var G = {};
+        L.forEach(function (e) {
+            var k = keyOf(e), g = G[k] || (G[k] = { key: k, name: nameOf(e), items: [], qte: 0, spent: 0, last: '', lastE: null, pu: [], kg: e.unitType === 'kg' });
+            g.items.push(e); g.qte += +e.qte || 0; g.spent += +e.montant || 0;
+            var u = unitP(e); if (u != null) g.pu.push(u);
+            if (String(e.date) >= g.last) { g.last = String(e.date); g.lastE = e; }
+        });
+        return Object.keys(G).map(function (k) { var g = G[k]; g.avg = g.qte > 0 ? g.items.filter(function (e) { return !e.offert; }).reduce(function (a, e) { return a + (+e.montant || 0); }, 0) / Math.max(1e-9, g.items.filter(function (e) { return !e.offert; }).reduce(function (a, e) { return a + (+e.qte || 0); }, 0)) : null; if (!isFinite(g.avg)) g.avg = null; g.min = g.pu.length ? Math.min.apply(null, g.pu) : null; g.max = g.pu.length ? Math.max.apply(null, g.pu) : null; return g; })
+            .sort(function (a, b) { return b.spent - a.spent; });
+    }
+
+    /* ───────────── Styles ───────────── */
+    var css = document.createElement('style');
+    css.id = 'ivy-css';
+    css.textContent = [
+        '.ivy-scope{display:inline-flex;align-items:center;gap:2px;padding:3px;border-radius:12px;background:var(--ivp-soft,rgba(124,58,237,.08));border:1.5px solid var(--ivp-line,rgba(15,23,42,.09));height:40px;}',
+        '.ivy-scope button{border:none;background:transparent;color:var(--text-main);font-weight:800;font-size:.8rem;padding:0 11px;height:32px;border-radius:9px;cursor:pointer;white-space:nowrap;font-family:inherit;}',
+        '.ivy-scope button.on{background:var(--ivp-a,#7c3aed);color:#fff;box-shadow:0 2px 8px rgba(124,58,237,.35);}',
+        '.ivy-scope select{border:none;background:transparent;color:var(--text-main);font-weight:800;font-size:.8rem;height:32px;padding:0 4px;cursor:pointer;font-family:inherit;max-width:150px;}',
+        'body.ivy-mode #inv-filter-total{display:none;}',
+        'body.ivy-mode .ivp-month{opacity:.45;}',
+        '#rt-approvisionnements.ivy-on > :not(.ivp-toolbar):not(#ivy-panel){display:none!important;}',
+        '#ivy-panel{display:none;color:var(--text-main);}',
+        '#rt-approvisionnements.ivy-on #ivy-panel{display:block;animation:ivyIn .35s cubic-bezier(.2,.9,.3,1);}',
+        '@keyframes ivyIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}',
+        '#ivy-panel *{box-sizing:border-box;}',
+        '.ivy-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:linear-gradient(120deg,#2e1065,#5b21b6 60%,#7c3aed);color:#fff;border-radius:16px;padding:14px 16px;margin-bottom:12px;box-shadow:var(--ivp-shadow);}',
+        '.ivy-head h2{margin:0;font-size:1.02rem;font-weight:900;display:flex;align-items:center;gap:8px;}',
+        '.ivy-head p{margin:3px 0 0;font-size:.76rem;opacity:.85;font-weight:600;}',
+        '.ivy-head .act{display:flex;gap:6px;flex-wrap:wrap;}',
+        '.ivy-hb{border:none;background:rgba(255,255,255,.16);color:#fff;border-radius:10px;padding:8px 11px;font-size:.76rem;font-weight:800;cursor:pointer;font-family:inherit;white-space:nowrap;box-shadow:inset 0 0 0 1px rgba(255,255,255,.2);}',
+        '.ivy-hb:hover{background:rgba(255,255,255,.26);}',
+        '.ivy-card{background:var(--ivp-card,#fff);border:1px solid var(--ivp-line);border-radius:14px;box-shadow:var(--ivp-shadow);padding:13px 15px;min-width:0;margin-bottom:12px;}',
+        '.ivy-card h3{margin:0 0 2px;font-size:.86rem;font-weight:900;display:flex;align-items:center;gap:7px;}',
+        '.ivy-card .sub{font-size:.7rem;color:var(--ivp-mute);font-weight:600;margin-bottom:10px;}',
+        '.ivy-kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:12px;}',
+        '.ivy-k{background:var(--ivp-card,#fff);border:1px solid var(--ivp-line);border-radius:13px;padding:10px 12px;box-shadow:var(--ivp-shadow);min-width:0;position:relative;overflow:hidden;}',
+        '.ivy-k::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 3px 3px 0;background:var(--a,#7c3aed);}',
+        '.ivy-k span{display:block;font-size:.6rem;font-weight:800;text-transform:uppercase;letter-spacing:.45px;color:var(--ivp-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+        '.ivy-k b{display:block;font-size:1.22rem;font-weight:900;letter-spacing:-.3px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}',
+        '.ivy-k small{display:block;font-size:.66rem;font-weight:700;color:var(--ivp-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+        '@media (max-width:1150px){.ivy-kpis{grid-template-columns:repeat(3,minmax(0,1fr));}}',
+        '@media (max-width:560px){.ivy-kpis{grid-template-columns:repeat(2,minmax(0,1fr));}}',
+        '.ivy-row{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:12px;}',
+        '.ivy-row .ivy-card{margin-bottom:0;}',
+        '.ivy-row+.ivy-card,.ivy-row+.ivy-row{margin-top:12px;}',
+        '@media (max-width:980px){.ivy-row{grid-template-columns:1fr;}}',
+        '.ivy-chart{position:relative;}.ivy-chart svg{display:block;width:100%;overflow:visible;}',
+        '.ivy-bar{transform-box:fill-box;transform-origin:50% 100%;animation:ivyGrow .5s cubic-bezier(.2,.9,.3,1) both;}',
+        '@keyframes ivyGrow{from{transform:scaleY(0);}to{transform:none;}}',
+        '#ivy-tip{position:fixed;z-index:30000;pointer-events:none;background:rgba(15,23,42,.95);color:#fff;border-radius:10px;padding:8px 11px;font-size:.74rem;font-weight:600;line-height:1.5;box-shadow:0 10px 26px rgba(0,0,0,.25);opacity:0;transition:opacity .12s;max-width:260px;}',
+        '#ivy-tip.show{opacity:1;}#ivy-tip b{font-weight:900;}',
+        '.ivy-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;}',
+        '.ivy-chip{border:1px solid var(--ivp-line);background:var(--ivp-card,#fff);color:var(--text-main);border-radius:20px;padding:6px 12px;font-size:.74rem;font-weight:800;cursor:pointer;font-family:inherit;display:inline-flex;gap:6px;align-items:center;}',
+        '.ivy-chip i{font-style:normal;font-size:.66rem;background:var(--ivp-soft);border-radius:9px;padding:1px 7px;}',
+        '.ivy-chip.on{background:var(--ivp-a,#7c3aed);color:#fff;border-color:transparent;}.ivy-chip.on i{background:rgba(255,255,255,.22);}',
+        '.ivy-tbl{overflow:auto;max-height:520px;border:1px solid var(--ivp-line);border-radius:12px;}',
+        '.ivy-tbl table{width:100%;border-collapse:separate;border-spacing:0;font-size:.79rem;}',
+        '.ivy-tbl th{position:sticky;top:0;z-index:1;background:var(--bg-card-2,#eee);text-align:left;font-size:.64rem;text-transform:uppercase;letter-spacing:.4px;color:var(--ivp-mute);font-weight:800;padding:9px 10px;white-space:nowrap;cursor:pointer;user-select:none;border-bottom:1px solid var(--ivp-line);}',
+        '.ivy-tbl th.r,.ivy-tbl td.r{text-align:right;}',
+        '.ivy-tbl th .ar{opacity:.45;margin-left:3px;}.ivy-tbl th.on .ar{opacity:1;color:var(--ivp-a);}',
+        '.ivy-tbl td{padding:8px 10px;border-bottom:1px solid var(--ivp-line);white-space:nowrap;font-variant-numeric:tabular-nums;vertical-align:middle;}',
+        '.ivy-tbl tbody tr{cursor:pointer;transition:background .12s;}.ivy-tbl tbody tr:hover{background:var(--ivp-soft);}',
+        '.ivy-tbl td.nm{white-space:normal;min-width:160px;font-weight:800;}',
+        '.ivy-tbl td.nm small{display:block;font-weight:600;color:var(--ivp-mute);font-size:.68rem;}',
+        '.ivy-tbl tfoot td{position:sticky;bottom:0;background:var(--bg-card-2,#eee);font-weight:900;border-top:1px solid var(--ivp-line);}',
+        '.ivy-best{display:inline-block;font-size:.62rem;font-weight:900;color:#0a7f0a;background:rgba(12,163,12,.12);border-radius:8px;padding:2px 7px;margin-left:6px;}',
+        'body.dark-mode .ivy-best{color:#4ade80;}',
+        '.ivy-up{color:#c43030;font-weight:800;}.ivy-dn{color:#0a7f0a;font-weight:800;}body.dark-mode .ivy-up{color:#f87171;}body.dark-mode .ivy-dn{color:#4ade80;}',
+        '.ivy-spark{display:block;}',
+        '.ivy-empty{padding:40px 16px;text-align:center;color:var(--ivp-mute);font-weight:700;background:var(--ivp-card,#fff);border:1px dashed var(--ivp-line);border-radius:14px;}',
+        '.ivy-empty b{display:block;font-size:2rem;margin-bottom:6px;}',
+        '.ivy-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:.68rem;font-weight:700;color:var(--ivp-mute);margin-top:6px;}',
+        '.ivy-legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:5px;}',
+        '@media (prefers-reduced-motion: reduce){#ivy-panel,#ivy-panel *{animation:none!important;transition:none!important;}}'
+    ].join('\n');
+
+    /* ───────────── Interface ───────────── */
+    var tip = null;
+    function showTip(html, ev) { if (!tip) { tip = document.createElement('div'); tip.id = 'ivy-tip'; document.body.appendChild(tip); } tip.innerHTML = html; tip.classList.add('show'); var w = tip.offsetWidth, h = tip.offsetHeight, x = ev.clientX + 14, y = ev.clientY - h - 12; if (x + w > innerWidth - 6) x = ev.clientX - w - 14; if (y < 6) y = ev.clientY + 16; tip.style.left = x + 'px'; tip.style.top = y + 'px'; }
+    function hideTip() { if (tip) tip.classList.remove('show'); }
+    function install() {
+        var sr = document.querySelector('#rt-approvisionnements .ivp-search'), wrap = $('rt-approvisionnements');
+        if (!sr || !wrap) return false;
+        if (!$('ivy-css')) document.head.appendChild(css);
+        if (!$('ivy-scope')) {
+            var sc = document.createElement('div'); sc.className = 'ivy-scope'; sc.id = 'ivy-scope'; sc.setAttribute('role', 'group'); sc.setAttribute('aria-label', 'Étendue de la recherche');
+            sc.innerHTML = '<button type="button" data-s="month" title="Recherche dans le mois affiché">📅 Mois</button><button type="button" data-s="year" title="Recherche sur toute l’année">🗓️ Année</button><select id="ivy-year" aria-label="Année"></select>';
+            sr.parentNode.insertBefore(sc, sr.nextSibling);
+            sc.addEventListener('click', function (e) { var b = e.target.closest('[data-s]'); if (b) setMode(b.getAttribute('data-s') === 'year'); });
+            $('ivy-year').addEventListener('change', function (e) { st.year = e.target.value; st.pick = ''; save(); setMode(true); });
+            // Changer de mois = revenir à l'affichage du mois
+            var ms = $('inv-filter-month'); if (ms) ms.addEventListener('change', function () { if (st.on) setMode(false); });
+            Array.prototype.forEach.call(document.querySelectorAll('.ivp-month .ivp-mnav'), function (b) { b.addEventListener('click', function () { if (st.on) setMode(false); }); });
+            var inp = $('inv-search'); if (inp) inp.addEventListener('input', function () { st.pick = ''; });
+        }
+        if (!$('ivy-panel')) {
+            var p = document.createElement('div'); p.id = 'ivy-panel';
+            var tb = wrap.querySelector('.ivp-toolbar');
+            if (tb && tb.parentNode === wrap) wrap.insertBefore(p, tb.nextSibling); else wrap.insertBefore(p, wrap.firstChild);
+            p.addEventListener('click', onClick);
+        }
+        return true;
+    }
+    function fillYears() {
+        var s = $('ivy-year'); if (!s) return;
+        var Y = years(), cur = st.year;
+        if (cur !== 'L12' && Y.indexOf(parseInt(cur.slice(1), 10)) < 0) cur = st.year = 'Y' + Y[0];
+        s.innerHTML = Y.map(function (y) { return '<option value="Y' + y + '"' + (cur === 'Y' + y ? ' selected' : '') + '>' + y + '</option>'; }).join('') + '<option value="L12"' + (cur === 'L12' ? ' selected' : '') + '>12 derniers mois</option>';
+    }
+    function setMode(on) {
+        st.on = !!on;
+        var w = $('rt-approvisionnements'); if (w) w.classList.toggle('ivy-on', st.on);
+        document.body.classList.toggle('ivy-mode', st.on);
+        var inp = $('inv-search');
+        if (inp) inp.placeholder = st.on ? 'Rechercher sur l’année : produit, fournisseur, n° d’achat, facture, code-barres…' : 'Rechercher : désignation, fournisseur, n° d’achat, facture, produit…';
+        sync();
+        if (st.on) { render(); if (inp && !inp.value) inp.focus(); }
+        else if (typeof window.invRender === 'function') window.invRender();
+    }
+    function sync() {
+        Array.prototype.forEach.call(document.querySelectorAll('#ivy-scope [data-s]'), function (b) { b.classList.toggle('on', (b.getAttribute('data-s') === 'year') === st.on); });
+    }
+
+    /* ───────────── Rendu ───────────── */
+    function render() {
+        if (!install()) return;
+        fillYears(); sync();
+        var p = $('ivy-panel'); if (!st.on) return;
+        var S = selection(), R = S.R;
+        if (!S.q) return renderOverview(p, S);
+        var G = groupBy(S.list);
+        if (st.pick && !G.some(function (g) { return g.key === st.pick; })) st.pick = '';
+        var L = st.pick ? S.list.filter(function (e) { return keyOf(e) === st.pick; }) : S.list;
+        var head = '<div class="ivy-head"><div><h2>🗓️ Recherche sur ' + esc(R.label) + '</h2><p>' + L.length + ' achat' + (L.length > 1 ? 's' : '') + ' trouvé' + (L.length > 1 ? 's' : '') + ' pour « ' + esc(S.q) + ' »' + (S.filtered ? ' · filtres actifs' : '') + '</p></div>'
+            + '<div class="act"><button type="button" class="ivy-hb" data-act="csv">⬇️ Export CSV</button><button type="button" class="ivy-hb" data-act="clear">✕ Effacer la recherche</button><button type="button" class="ivy-hb" data-act="month">📅 Revenir au mois</button></div></div>';
+        if (!S.list.length) { p.innerHTML = head + '<div class="ivy-empty"><b>🔍</b>Aucun achat ne correspond à « ' + esc(S.q) + ' » sur ' + esc(R.label) + '.<br><small>Essayez un autre mot, une autre année ou « 12 derniers mois ».</small></div>'; return; }
+        var chips = G.length > 1 ? '<div class="ivy-chips"><button type="button" class="ivy-chip' + (!st.pick ? ' on' : '') + '" data-pick="">Tous les résultats <i>' + S.list.length + '</i></button>' + G.slice(0, 14).map(function (g) { return '<button type="button" class="ivy-chip' + (st.pick === g.key ? ' on' : '') + '" data-pick="' + esc(g.key) + '">' + esc(g.name) + ' <i>' + g.items.length + '</i></button>'; }).join('') + '</div>' : '';
+        var g1 = groupBy(L), one = g1.length === 1 ? g1[0] : null;
+        var buy = L.filter(function (e) { return !e.offert; });
+        var qte = L.reduce(function (a, e) { return a + (+e.qte || 0); }, 0), spent = L.reduce(function (a, e) { return a + (+e.montant || 0); }, 0);
+        var qB = buy.reduce(function (a, e) { return a + (+e.qte || 0); }, 0), sB = buy.reduce(function (a, e) { return a + (+e.montant || 0); }, 0);
+        var withP = L.filter(function (e) { return unitP(e) != null; });
+        var best = withP.slice().sort(function (a, b) { return unitP(a) - unitP(b); })[0], worst = withP.slice().sort(function (a, b) { return unitP(b) - unitP(a); })[0];
+        var lastE = L.slice().sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); })[0];
+        var ul = one && one.kg ? 'kg' : 'u.';
+        var K = [
+            ['Achats', String(L.length), (L.filter(function (e) { return e.offert; }).length ? L.filter(function (e) { return e.offert; }).length + ' offert(s) · ' : '') + monthsCount(L) + ' mois concerné' + (monthsCount(L) > 1 ? 's' : ''), '#7c3aed'],
+            ['Quantité achetée', num(qte, 2) + ' ' + ul, one ? 'en ' + L.length + ' fois' : 'tous produits confondus', '#2a78d6'],
+            ['Total dépensé', eur(spent), 'sur ' + R.label, '#dc2626'],
+            ['Prix unitaire moyen', qB > 0 && one ? eur(sB / qB) + '/' + ul : '—', one ? 'pondéré par la quantité' : 'choisissez un produit', '#0f766e'],
+            ['Meilleur prix', best && one ? eur(unitP(best)) : '—', best && one ? fmtD(best.date) + ' · ' + (best.fournisseur || 'fournisseur ?') : '', '#0ca30c'],
+            ['Dernier achat', lastE ? fmtD(lastE.date) : '—', lastE ? (lastE.fournisseur || '—') + (unitP(lastE) != null ? ' · ' + eur(unitP(lastE)) + '/' + unitLbl(lastE) : '') : '', '#eb6834']
+        ];
+        var html = head + chips
+            + '<div class="ivy-kpis">' + K.map(function (k) { return '<div class="ivy-k" style="--a:' + k[3] + '"><span>' + k[0] + '</span><b title="' + esc(k[1]) + '">' + k[1] + '</b><small title="' + esc(k[2]) + '">' + esc(k[2]) + '</small></div>'; }).join('') + '</div>'
+            + '<div class="ivy-row"><div class="ivy-card"><h3>📊 Dépenses mois par mois</h3><div class="sub">Montant des achats trouvés · ' + esc(R.label) + '</div><div class="ivy-chart" id="ivy-c1"></div></div>'
+            + '<div class="ivy-card"><h3>💶 Évolution du prix unitaire</h3><div class="sub">' + (one ? 'Chaque point = un achat · ligne = prix moyen du mois' : 'Choisissez un produit ci-dessus pour comparer ses prix') + '</div><div class="ivy-chart" id="ivy-c2"></div></div></div>'
+            + '<div class="ivy-row"><div class="ivy-card"><h3>🧾 Détail des achats</h3><div class="sub">Cliquez sur une ligne pour ouvrir la fiche de l’achat</div><div class="ivy-tbl" id="ivy-tbl"></div></div>'
+            + '<div class="ivy-card"><h3>🏢 Par fournisseur</h3><div class="sub">' + (one ? 'Qui vous vend ce produit le moins cher' : 'Répartition des achats trouvés') + '</div><div id="ivy-fourn"></div></div></div>';
+        p.innerHTML = html;
+        st.cur = { L: L, R: R, one: one };
+        chartMonths(L, R); chartPrice(L, R, one); table(L); fourn(L, one);
+    }
+    function monthsCount(L) { var M = {}; L.forEach(function (e) { M[String(e.date).slice(0, 7)] = 1; }); return Object.keys(M).length; }
+    function renderOverview(p, S) {
+        var R = S.R, G = groupBy(S.list), tot = S.list.reduce(function (a, e) { return a + (+e.montant || 0); }, 0);
+        var head = '<div class="ivy-head"><div><h2>🗓️ Produits approvisionnés · ' + esc(R.label) + '</h2><p>' + G.length + ' produit' + (G.length > 1 ? 's' : '') + ' · ' + S.list.length + ' achat' + (S.list.length > 1 ? 's' : '') + ' · ' + eur(tot) + ' dépensés' + (S.filtered ? ' · filtres actifs' : '') + ' — tapez un nom dans la recherche ou cliquez sur une ligne</p></div>'
+            + '<div class="act"><button type="button" class="ivy-hb" data-act="csv">⬇️ Export CSV</button><button type="button" class="ivy-hb" data-act="month">📅 Revenir au mois</button></div></div>';
+        if (!G.length) { p.innerHTML = head + '<div class="ivy-empty"><b>💼</b>Aucun achat enregistré sur ' + esc(R.label) + '.</div>'; return; }
+        st.cur = { L: S.list, R: R, one: null };
+        var rows = G.map(function (g) {
+            var by = {}; g.items.forEach(function (e) { var m = String(e.date).slice(0, 7); by[m] = (by[m] || 0) + (+e.qte || 0); });
+            var vals = R.months.map(function (m) { return by[m] || 0; }), mx = Math.max.apply(null, vals.concat([1]));
+            var sp = '<svg class="ivy-spark" width="96" height="22" viewBox="0 0 96 22" aria-hidden="true">' + vals.map(function (v, i) { var h = v ? Math.max(2, 20 * v / mx) : 1; return '<rect x="' + (i * 8 + 1) + '" y="' + (21 - h) + '" width="6" height="' + h + '" rx="1.5" fill="' + (v ? '#7c3aed' : 'rgba(127,127,127,.25)') + '"/>'; }).join('') + '</svg>';
+            var le = g.lastE || {};
+            return '<tr data-q="' + esc(g.name) + '" data-k="' + esc(g.key) + '"><td class="nm">' + esc(g.name) + '<small>' + g.items.length + ' achat' + (g.items.length > 1 ? 's' : '') + '</small></td><td>' + sp + '</td>'
+                + '<td class="r">' + num(g.qte, 2) + ' ' + (g.kg ? 'kg' : 'u.') + '</td><td class="r"><b>' + eur(g.spent) + '</b></td>'
+                + '<td class="r">' + (g.avg != null ? eur(g.avg) : '—') + (g.min != null && g.max != null && g.max - g.min > 0.005 ? '<br><small style="color:var(--ivp-mute)">' + eur(g.min) + ' → ' + eur(g.max) + '</small>' : '') + '</td>'
+                + '<td>' + fmtD(g.last) + '<br><small style="color:var(--ivp-mute)">' + esc(le.fournisseur || '—') + '</small></td></tr>';
+        }).join('');
+        p.innerHTML = head + '<div class="ivy-card"><h3>📦 Tous les produits de la période</h3><div class="sub">Triés par montant dépensé · la mini-barre montre les quantités achetées mois par mois</div>'
+            + '<div class="ivy-tbl"><table><thead><tr><th>Produit</th><th>Mois par mois</th><th class="r">Quantité</th><th class="r">Dépensé</th><th class="r">Prix unit. moyen</th><th>Dernier achat</th></tr></thead><tbody>' + rows + '</tbody>'
+            + '<tfoot><tr><td>Total · ' + G.length + ' produits</td><td></td><td></td><td class="r">' + eur(tot) + '</td><td></td><td></td></tr></tfoot></table></div></div>';
+    }
+    function nice(raw) { raw = Math.max(raw, 1e-9); var mag = Math.pow(10, Math.floor(Math.log10(raw / 4))); return ([1, 2, 2.5, 5, 10].map(function (x) { return x * mag; }).filter(function (x) { return x * 4 >= raw; })[0] || mag * 10); }
+    function chartMonths(L, R) {
+        var host = $('ivy-c1'); if (!host) return;
+        var by = {}; R.months.forEach(function (m) { by[m] = { v: 0, q: 0, n: 0 }; });
+        L.forEach(function (e) { var m = String(e.date).slice(0, 7); if (by[m]) { by[m].v += +e.montant || 0; by[m].q += +e.qte || 0; by[m].n++; } });
+        var vals = R.months.map(function (m) { return by[m]; }), w = Math.max(280, host.clientWidth), h = 200, pl = 46, pr = 6, pt = 16, pb = 24;
+        var stp = nice(Math.max.apply(null, vals.map(function (x) { return x.v; }).concat([1]))), max = stp * 4, bw = (w - pl - pr) / 12, bar = Math.min(34, bw * .62);
+        var X = function (i) { return pl + bw * (i + .5); }, Y = function (v) { return pt + (h - pt - pb) * (1 - v / max); };
+        var s = '';
+        for (var k = 0; k <= 4; k++) s += '<line x1="' + pl + '" x2="' + (w - pr) + '" y1="' + Y(stp * k) + '" y2="' + Y(stp * k) + '" stroke="var(--ivp-line)"/><text x="' + (pl - 6) + '" y="' + (Y(stp * k) + 3.5) + '" text-anchor="end" font-size="10" font-weight="700" fill="var(--ivp-mute)">' + num(stp * k, 0) + ' €</text>';
+        var top = -1, tv = 0; vals.forEach(function (x, i) { if (x.v > tv) { tv = x.v; top = i; } });
+        vals.forEach(function (x, i) {
+            var mm = parseInt(R.months[i].slice(5), 10) - 1;
+            if (x.v > 0) { var y = Y(x.v), hh = h - pb - y, r = Math.min(4, bar / 2, hh); s += '<path class="ivy-bar" d="M' + (X(i) - bar / 2) + ' ' + (h - pb) + 'V' + (y + r) + 'Q' + (X(i) - bar / 2) + ' ' + y + ' ' + (X(i) - bar / 2 + r) + ' ' + y + 'H' + (X(i) + bar / 2 - r) + 'Q' + (X(i) + bar / 2) + ' ' + y + ' ' + (X(i) + bar / 2) + ' ' + (y + r) + 'V' + (h - pb) + 'Z" fill="#7c3aed"' + (i === top ? '' : ' fill-opacity=".72"') + ' style="animation-delay:' + i * 30 + 'ms"/>'; }
+            else s += '<rect x="' + (X(i) - bar / 2) + '" y="' + (h - pb - 2) + '" width="' + bar + '" height="2" rx="1" fill="var(--ivp-line)"/>';
+            if (bw > 30 || i % 2 === 0) s += '<text x="' + X(i) + '" y="' + (h - 7) + '" text-anchor="middle" font-size="9.5" font-weight="' + (i === top ? 900 : 700) + '" fill="' + (i === top ? 'var(--text-main)' : 'var(--ivp-mute)') + '">' + MO[mm] + '</text>';
+            s += '<rect class="hit" data-i="' + i + '" x="' + (pl + bw * i) + '" y="' + pt + '" width="' + bw + '" height="' + (h - pt - pb) + '" fill="transparent"/>';
+        });
+        if (top >= 0) s += '<text x="' + X(top) + '" y="' + (Y(tv) - 5) + '" text-anchor="middle" font-size="10" font-weight="900" fill="var(--text-main)">' + num(tv, 0) + ' €</text>';
+        host.innerHTML = '<svg viewBox="0 0 ' + w + ' ' + h + '" height="' + h + '" role="img" aria-label="Dépenses par mois">' + s + '</svg>';
+        host.querySelector('svg').addEventListener('mousemove', function (ev) { var r = ev.target.closest('.hit'); if (!r) return hideTip(); var i = +r.getAttribute('data-i'), x = vals[i], m = R.months[i]; showTip('<b>' + MO[parseInt(m.slice(5), 10) - 1] + ' ' + m.slice(0, 4) + '</b><br>' + (x.n ? eur(x.v) + ' · ' + x.n + ' achat' + (x.n > 1 ? 's' : '') + '<br>Quantité : ' + num(x.q, 2) + (x.q > 0 && x.v > 0 ? '<br>Prix moyen : ' + eur(x.v / x.q) : '') : 'Aucun achat'), ev); });
+        host.querySelector('svg').addEventListener('mouseleave', hideTip);
+    }
+    function chartPrice(L, R, one) {
+        var host = $('ivy-c2'); if (!host) return;
+        var pts = one ? L.filter(function (e) { return unitP(e) != null; }) : [];
+        if (!pts.length) { host.innerHTML = '<div class="ivy-empty" style="padding:30px 10px;border:none;box-shadow:none">' + (one ? 'Aucun prix unitaire (quantité non renseignée).' : '👆 Plusieurs produits trouvés : choisissez-en un pour voir l’évolution de son prix.') + '</div>'; return; }
+        var w = Math.max(240, host.clientWidth), h = 200, pl = 50, pr = 10, pt = 16, pb = 24;
+        var t0 = new Date(R.months[0] + '-01').getTime(), last = R.months[11].split('-'), t1 = new Date(+last[0], +last[1], 0).getTime() + 864e5;
+        var vs = pts.map(unitP), lo = Math.min.apply(null, vs), hi = Math.max.apply(null, vs), pad = Math.max((hi - lo) * .2, hi * .05, .01);
+        var ymin = Math.max(0, lo - pad), ymax = hi + pad;
+        var X = function (t) { return pl + (w - pl - pr) * (t - t0) / (t1 - t0); }, Y = function (v) { return pt + (h - pt - pb) * (1 - (v - ymin) / (ymax - ymin)); };
+        var s = '';
+        for (var k = 0; k <= 3; k++) { var v = ymin + (ymax - ymin) * k / 3; s += '<line x1="' + pl + '" x2="' + (w - pr) + '" y1="' + Y(v) + '" y2="' + Y(v) + '" stroke="var(--ivp-line)"/><text x="' + (pl - 6) + '" y="' + (Y(v) + 3.5) + '" text-anchor="end" font-size="10" font-weight="700" fill="var(--ivp-mute)">' + eur(v, v < 10 ? 2 : 1) + '</text>'; }
+        R.months.forEach(function (m, i) { if (i % 2 === 0) { var tm = new Date(m + '-01').getTime(); s += '<text x="' + X(tm + 15 * 864e5) + '" y="' + (h - 7) + '" text-anchor="middle" font-size="9.5" font-weight="700" fill="var(--ivp-mute)">' + MO[parseInt(m.slice(5), 10) - 1] + '</text>'; } });
+        // moyenne mensuelle (pondérée)
+        var mm = {}; pts.forEach(function (e) { var m = String(e.date).slice(0, 7), q = +e.qte || 1; (mm[m] = mm[m] || { a: 0, q: 0 }); mm[m].a += unitP(e) * q; mm[m].q += q; });
+        var line = R.months.filter(function (m) { return mm[m]; }).map(function (m, i) { var tm = new Date(m + '-01').getTime() + 15 * 864e5; return (i ? 'L' : 'M') + X(tm).toFixed(1) + ' ' + Y(mm[m].a / mm[m].q).toFixed(1); }).join(' ');
+        if (line) s += '<path d="' + line + '" fill="none" stroke="#7c3aed" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+        var minE = pts.slice().sort(function (a, b) { return unitP(a) - unitP(b); })[0];
+        pts.forEach(function (e, i) { var t = new Date(String(e.date).slice(0, 10)).getTime() + 12 * 36e5, isMin = e === minE; s += '<circle class="dot" data-i="' + i + '" cx="' + X(t) + '" cy="' + Y(unitP(e)) + '" r="' + (isMin ? 6 : 4.5) + '" fill="' + (isMin ? '#0ca30c' : 'var(--ivp-card,#fff)') + '" stroke="' + (isMin ? 'var(--ivp-card,#fff)' : '#7c3aed') + '" stroke-width="2" style="cursor:pointer"/>'; });
+        host.innerHTML = '<svg viewBox="0 0 ' + w + ' ' + h + '" height="' + h + '" role="img" aria-label="Prix unitaire">' + s + '</svg><div class="ivy-legend"><span><i style="background:#7c3aed;height:3px;vertical-align:middle"></i>Prix moyen du mois</span><span><i style="background:transparent;border:2px solid #7c3aed;border-radius:50%;width:10px;height:10px"></i>Un achat</span><span><i style="background:#0ca30c;border-radius:50%"></i>Meilleur prix</span></div>';
+        var svg = host.querySelector('svg');
+        svg.addEventListener('mousemove', function (ev) { var c = ev.target.closest('.dot'); if (!c) return hideTip(); var e = pts[+c.getAttribute('data-i')]; showTip('<b>' + fmtD(e.date) + '</b> · n° ' + esc(e.numero || '—') + '<br>' + eur(unitP(e)) + ' / ' + unitLbl(e) + ' · ' + num(e.qte, 2) + ' ' + unitLbl(e) + '<br>' + esc(e.fournisseur || 'Fournisseur non renseigné') + (e === minE ? '<br>✅ Meilleur prix de la période' : ''), ev); });
+        svg.addEventListener('mouseleave', hideTip);
+        svg.addEventListener('click', function (ev) { var c = ev.target.closest('.dot'); if (c) openEntry(pts[+c.getAttribute('data-i')].id); });
+    }
+    function table(L) {
+        var host = $('ivy-tbl'); if (!host) return;
+        var cols = [['date', 'Date', ''], ['numero', 'N°', ''], ['desc', 'Désignation', ''], ['fournisseur', 'Fournisseur', ''], ['qte', 'Quantité', 'r'], ['pu', 'Prix unit.', 'r'], ['montant', 'Montant', 'r'], ['paiement', 'Paiement', '']];
+        var val = function (e, k) { return k === 'pu' ? (unitP(e) || 0) : k === 'qte' || k === 'montant' ? (+e[k] || 0) : String(e[k] || ''); };
+        var R = L.slice().sort(function (a, b) { var x = val(a, st.sort), y = val(b, st.sort); return (typeof x === 'number' ? x - y : x.localeCompare(y, 'fr')) * st.dir; });
+        var prevPU = {}; L.slice().sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); }).forEach(function (e) { var k = keyOf(e), u = unitP(e); if (u != null) { e._ivyPrev = prevPU[k]; prevPU[k] = u; } });
+        var tq = L.reduce(function (a, e) { return a + (+e.qte || 0); }, 0), tm = L.reduce(function (a, e) { return a + (+e.montant || 0); }, 0);
+        host.innerHTML = '<table><thead><tr>' + cols.map(function (c) { return '<th class="' + c[2] + (st.sort === c[0] ? ' on' : '') + '" data-sort="' + c[0] + '">' + c[1] + '<span class="ar">' + (st.sort === c[0] ? (st.dir > 0 ? '▲' : '▼') : '↕') + '</span></th>'; }).join('') + '</tr></thead><tbody>'
+            + R.map(function (e) {
+                var u = unitP(e), pv = e._ivyPrev, tr = u != null && pv != null && Math.abs(u - pv) > 0.004 ? (u > pv ? ' <span class="ivy-up" title="Plus cher que l’achat précédent">▲</span>' : ' <span class="ivy-dn" title="Moins cher que l’achat précédent">▼</span>') : '';
+                return '<tr data-id="' + esc(e.id) + '"><td>' + fmtD(e.date) + '</td><td>' + esc(e.numero || '—') + '</td><td class="nm">' + esc(e.desc || '') + (e.facture ? '<small>Facture ' + esc(e.facture) + '</small>' : '') + '</td><td>' + esc(e.fournisseur || '—') + '</td>'
+                    + '<td class="r">' + (e.qte ? num(e.qte, 2) + ' ' + unitLbl(e) : '—') + '</td><td class="r">' + (u != null ? eur(u) + tr : (e.offert ? '🎁' : '—')) + '</td><td class="r"><b>' + eur(e.montant) + '</b></td><td>' + esc(PAY[e.paiement] || e.paiement || '—') + '</td></tr>';
+            }).join('') + '</tbody><tfoot><tr><td colspan="4">Total · ' + L.length + ' achat' + (L.length > 1 ? 's' : '') + '</td><td class="r">' + num(tq, 2) + '</td><td></td><td class="r">' + eur(tm) + '</td><td></td></tr></tfoot></table>';
+    }
+    function fourn(L, one) {
+        var host = $('ivy-fourn'); if (!host) return;
+        var F = {};
+        L.forEach(function (e) { var f = e.fournisseur || 'Non renseigné', g = F[f] || (F[f] = { f: f, n: 0, q: 0, v: 0, qb: 0, vb: 0, min: null }); g.n++; g.q += +e.qte || 0; g.v += +e.montant || 0; if (!e.offert && +e.qte > 0) { g.qb += +e.qte; g.vb += +e.montant || 0; } var u = unitP(e); if (u != null && (g.min == null || u < g.min)) g.min = u; });
+        var A = Object.keys(F).map(function (k) { var g = F[k]; g.avg = g.qb > 0 ? g.vb / g.qb : null; return g; }).sort(function (a, b) { return b.v - a.v; });
+        var cheapest = one ? A.filter(function (g) { return g.avg != null; }).sort(function (a, b) { return a.avg - b.avg; })[0] : null;
+        var tot = A.reduce(function (a, g) { return a + g.v; }, 0) || 1;
+        host.innerHTML = '<div class="ivy-tbl" style="max-height:none"><table><thead><tr><th>Fournisseur</th><th class="r">Achats</th><th class="r">' + (one ? 'Prix moyen' : 'Part') + '</th><th class="r">Dépensé</th></tr></thead><tbody>'
+            + A.map(function (g) {
+                return '<tr data-f="' + esc(g.f) + '" title="Filtrer sur ce fournisseur"><td class="nm">' + esc(g.f) + (cheapest === g && A.length > 1 ? '<span class="ivy-best">💰 le moins cher</span>' : '') + '<small>' + num(g.q, 2) + ' acheté' + (g.q > 1 ? 's' : '') + (one && g.min != null ? ' · mini ' + eur(g.min) : '') + '</small></td><td class="r">' + g.n + '</td>'
+                    + '<td class="r">' + (one ? (g.avg != null ? eur(g.avg) : '—') : Math.round(100 * g.v / tot) + ' %') + '</td><td class="r"><b>' + eur(g.v) + '</b></td></tr>';
+            }).join('') + '</tbody></table></div>';
+    }
+    function openEntry(id) { if (typeof window.invOpenEdit === 'function') { try { window.invOpenEdit(id); } catch (e) { console.warn(e); } } }
+    function csv() {
+        var c = st.cur; if (!c || !c.L.length) { if (typeof showScanToast === 'function') showScanToast('Rien à exporter', 'info'); return; }
+        var rows = [['Date', 'N°', 'Désignation', 'Produit', 'Fournisseur', 'Quantité', 'Unité', 'Prix unitaire', 'Montant', 'Paiement', 'Facture', 'Catégorie', 'Note']];
+        c.L.slice().sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); }).forEach(function (e) { var u = unitP(e); rows.push([fmtD(e.date), e.numero || '', e.desc || '', e.produitNom || '', e.fournisseur || '', e.qte || '', unitLbl(e), u != null ? u.toFixed(3).replace('.', ',') : '', (+e.montant || 0).toFixed(2).replace('.', ','), PAY[e.paiement] ? PAY[e.paiement].replace(/^\S+\s/, '') : (e.paiement || ''), e.facture || '', e.cat || '', e.note || '']); });
+        var txt = '﻿' + rows.map(function (r) { return r.map(function (x) { x = String(x == null ? '' : x); return /[;"\n]/.test(x) ? '"' + x.replace(/"/g, '""') + '"' : x; }).join(';'); }).join('\r\n');
+        var q = (($('inv-search') || {}).value || 'tous').trim().replace(/[^\wÀ-ÿ-]+/g, '_').slice(0, 30) || 'tous';
+        var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], { type: 'text/csv;charset=utf-8' })); a.download = 'achats_' + c.R.short.replace(/\s+/g, '_') + '_' + q + '.csv';
+        document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    }
+    function onClick(e) {
+        var b = e.target.closest('[data-act],[data-pick],th[data-sort],tr[data-id],tr[data-q],tr[data-f]'); if (!b) return;
+        var a = b.getAttribute('data-act');
+        if (a === 'month') return setMode(false);
+        if (a === 'csv') return csv();
+        if (a === 'clear') { var i = $('inv-search'); if (i) { i.value = ''; i.focus(); } st.pick = ''; return render(); }
+        if (b.hasAttribute('data-pick')) { st.pick = b.getAttribute('data-pick'); return render(); }
+        if (b.hasAttribute('data-sort')) { var k = b.getAttribute('data-sort'); if (st.sort === k) st.dir = -st.dir; else { st.sort = k; st.dir = (k === 'date' || k === 'montant' || k === 'qte' || k === 'pu') ? -1 : 1; } if (st.cur) table(st.cur.L); return; }
+        if (b.hasAttribute('data-id')) return openEntry(b.getAttribute('data-id'));
+        if (b.hasAttribute('data-q')) { var inp = $('inv-search'); if (inp) inp.value = b.getAttribute('data-q'); st.pick = b.getAttribute('data-k') || ''; window.scrollTo({ top: Math.max(0, ($('rt-approvisionnements').getBoundingClientRect().top + scrollY) - 70), behavior: 'smooth' }); return render(); }
+        if (b.hasAttribute('data-f')) { var s = $('inv-filter-fourn'), f = b.getAttribute('data-f'); if (s && Array.prototype.some.call(s.options, function (o) { return o.value === f; })) { s.value = s.value === f ? '' : f; render(); } }
+    }
+
+    /* ───────────── Branchement ───────────── */
+    function boot() {
+        if (typeof window.invRender !== 'function' || !document.querySelector('#rt-approvisionnements .ivp-search')) return setTimeout(boot, 300);
+        install(); fillYears(); sync();
+        var orig = window.invRender;
+        window.invRender = function () { var r; try { r = orig.apply(this, arguments); } finally { if (st.on) { try { render(); } catch (e) { console.warn('[Recherche annuelle]', e); } } } return r; };
+        var rt = null; window.addEventListener('resize', function () { if (!st.on || !st.cur) return; clearTimeout(rt); rt = setTimeout(function () { chartMonths(st.cur.L, st.cur.R); chartPrice(st.cur.L, st.cur.R, st.cur.one); }, 150); });
+        window.addEventListener('storage', function (e) { if (st.on && e.key === 'covo_approvisionnements') render(); });
+        // Raccourci : Ctrl/⌘ + Maj + F → recherche annuelle
+        document.addEventListener('keydown', function (e) { if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'F' || e.key === 'f')) { e.preventDefault(); setMode(true); var i = $('inv-search'); if (i) i.focus(); } });
+    }
+    window._ivyOpen = function (q) { var i = $('inv-search'); if (i && q != null) i.value = q; setMode(true); };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>
+
 </body>
 </html>
