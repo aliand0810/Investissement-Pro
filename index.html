@@ -7442,184 +7442,309 @@ window.cpMaybeShowInstallBanner = function(){
 </html>
 <script>
 /* ════════════════════════════════════════════════════════════════════════
-   APPROVISIONNEMENT PRO — CALCUL AU POIDS (fenêtre « Nouveau produit au catalogue »)
-   Exemple : 2 kg achetés 33 € ÷ portions de 0,25 kg
-     → 8 portions · 16,50 €/kg · 4,13 € la portion (prix d'achat)
-     → prix de vente conseillé selon le coefficient choisi (au kg ET à la portion), marge estimée
-   Deux façons d'appliquer le résultat :
-     • « Vendre au kg »         : produit au poids, prix de vente au kg
-     • « Vendre à la portion »  : produit à l'unité (ex. « … 250 g »), prix de la portion ;
-                                   l'achat en cours passe en 8 unités (stock en portions)
+   APPROVISIONNEMENT PRO — MODE « PORTION » (fenêtre Nouvel achat, à côté de Pack)
+   Exemple : 2 kg achetés 33 € · pochons de 250 g · vendus 2 € pièce
+     → 8 pochons · coût 4,13 € le pochon · CA 16,00 € · résultat −17,00 €
+   Le nombre de pochons et les grammes par pochon sont liés dans les deux sens :
+     • je choisis les grammes  → nombre de pochons calculé
+     • je choisis le nombre    → grammes par pochon calculés
+   Enregistrement : quantité = nombre de pochons (stock en unités) ;
+   si le produit associé est vendu au kg, le stock reçoit le poids (kg) et les
+   pochons servent au calcul. Le détail est conservé dans l'achat (champ portion).
    ════════════════════════════════════════════════════════════════════════ */
 (function () {
     'use strict';
-    if (window._invKgCalcInstalled) return;
-    window._invKgCalcInstalled = true;
+    if (window._invPortionInstalled) return;
+    window._invPortionInstalled = true;
     function $(id) { return document.getElementById(id); }
     function num(v) { var n = parseFloat(String(v == null ? '' : v).replace(',', '.')); return isFinite(n) ? n : 0; }
     function eur(n) { return (Math.round(n * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'; }
-    function kgTxt(k) { return k < 1 ? Math.round(k * 1000) + ' g' : (Math.round(k * 1000) / 1000).toLocaleString('fr-FR', { maximumFractionDigits: 3 }) + ' kg'; }
-    var COEF_KEY = 'covo_inv_kg_coef', PORT_KEY = 'covo_inv_kg_portion';
-    var pendingPortion = null;
+    function gTxt(g) { return g >= 1000 ? (Math.round(g) / 1000).toLocaleString('fr-FR', { maximumFractionDigits: 3 }) + ' kg' : (Math.round(g * 10) / 10).toLocaleString('fr-FR') + ' g'; }
+    function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+    function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+    function toast(m, t) { if (typeof showScanToast === 'function') showScanToast(m, t || 'success'); }
+    var G_KEY = 'covo_inv_portion_g', PV_KEY = 'covo_inv_portion_pv';
+    var on = false, R = null;
 
     var CSS = [
-        '#inv-kgc{border:1.5px solid rgba(155,89,182,.35);background:rgba(155,89,182,.06);border-radius:11px;padding:11px 12px;display:none;}',
-        '#inv-kgc.on{display:block;}',
-        '#inv-kgc .kh{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:.78rem;font-weight:800;color:#8e44ad;margin-bottom:8px;}',
-        '#inv-kgc .kg3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;}',
-        '#inv-kgc label{display:block;font-size:.62rem;font-weight:800;color:var(--gray,#7f8c8d);text-transform:uppercase;margin-bottom:3px;}',
-        '#inv-kgc input{width:100%;padding:8px 9px;border:1.5px solid var(--border-color,#e0e0e0);border-radius:8px;font-size:.85rem;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);}',
-        '#inv-kgc .chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;align-items:center;}',
-        '#inv-kgc .chips span{font-size:.64rem;font-weight:800;color:var(--gray,#7f8c8d);text-transform:uppercase;margin-right:2px;}',
-        '#inv-kgc .chips button{border:1.5px solid rgba(155,89,182,.35);background:var(--bg-card,#fff);color:#8e44ad;border-radius:999px;padding:3px 9px;font-size:.72rem;font-weight:800;cursor:pointer;}',
-        '#inv-kgc .chips button.on{background:#8e44ad;color:#fff;border-color:#8e44ad;}',
-        '#inv-kgc .res{margin-top:9px;display:grid;grid-template-columns:1fr 1fr;gap:6px;}',
-        '#inv-kgc .res div{background:var(--bg-card,#fff);border:1px solid var(--border-color,#eee);border-radius:9px;padding:7px 9px;}',
-        '#inv-kgc .res small{display:block;font-size:.6rem;font-weight:800;text-transform:uppercase;color:var(--gray,#7f8c8d);}',
-        '#inv-kgc .res b{display:block;font-size:.95rem;color:var(--text-main,#2c3e50);}',
-        '#inv-kgc .res i{display:block;font-style:normal;font-size:.7rem;color:var(--gray,#7f8c8d);}',
-        '#inv-kgc .res .big{grid-column:1/-1;background:linear-gradient(135deg,rgba(155,89,182,.12),rgba(155,89,182,.04));border-color:rgba(155,89,182,.3);}',
-        '#inv-kgc .res .big b{font-size:1.1rem;color:#8e44ad;}',
-        '#inv-kgc .acts{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap;}',
-        '#inv-kgc .acts button{flex:1;min-width:150px;border:none;border-radius:9px;padding:9px 10px;font-weight:800;font-size:.78rem;cursor:pointer;color:#fff;background:linear-gradient(135deg,#9b59b6,#8e44ad);}',
-        '#inv-kgc .acts button.alt{background:linear-gradient(135deg,#16a085,#0e6655);}',
-        '#inv-kgc .acts button:disabled{opacity:.45;cursor:not-allowed;}',
-        '#inv-kgc .warn{font-size:.72rem;color:#b45309;font-weight:700;margin-top:6px;}',
-        '#inv-kgc-open{border:1.5px dashed rgba(155,89,182,.5);background:transparent;color:#8e44ad;border-radius:9px;padding:7px 10px;font-weight:800;font-size:.76rem;cursor:pointer;width:100%;}',
-        '@media (max-width:420px){#inv-kgc .kg3{grid-template-columns:1fr 1fr;}#inv-kgc .kg3>div:last-child{grid-column:1/-1;}}'
+        '#inv-m-unit-toggle button[data-unit="portion"]{white-space:nowrap;}',
+        '#ipo{display:none;border:1.5px solid rgba(22,160,133,.4);background:rgba(22,160,133,.06);border-radius:11px;padding:11px 12px;margin:10px 0 4px;}',
+        '#ipo.on{display:block;}',
+        '#ipo .ph{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.8rem;font-weight:800;color:#0e7c66;margin-bottom:8px;}',
+        '#ipo .ph small{font-weight:600;color:var(--gray,#7f8c8d);font-size:.68rem;}',
+        '#ipo .pg{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}',
+        '#ipo .pg>div{display:flex;flex-direction:column;justify-content:flex-start;}',
+        '#ipo label{min-height:2.2em;display:flex !important;align-items:flex-end;font-size:.62rem;font-weight:800;color:var(--gray,#7f8c8d);text-transform:uppercase;margin-bottom:3px;}',
+        '#ipo input{width:100%;padding:8px 9px;border:1.5px solid rgba(22,160,133,.35);border-radius:8px;font-size:.92rem;font-weight:700;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);}',
+        '#ipo .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;}',
+        '#ipo .chips button{border:1px solid rgba(22,160,133,.45);background:var(--bg-card,#fff);color:#0e7c66;border-radius:999px;padding:2px 7px;font-size:.68rem;font-weight:800;cursor:pointer;}',
+        '#ipo .chips button.on{background:#16a085;color:#fff;border-color:#16a085;}',
+        '#ipo .res{margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}',
+        '#ipo .res div{background:var(--bg-card,#fff);border:1px solid var(--border-color,#e5e7eb);border-radius:9px;padding:7px 9px;min-width:0;}',
+        '#ipo .res small{display:block;font-size:.6rem;font-weight:800;text-transform:uppercase;color:var(--gray,#7f8c8d);}',
+        '#ipo .res b{display:block;font-size:.98rem;color:var(--text-main,#2c3e50);}',
+        '#ipo .res i{display:block;font-style:normal;font-size:.68rem;color:var(--gray,#7f8c8d);}',
+        '#ipo .res .big{grid-column:1/-1;background:linear-gradient(135deg,rgba(22,160,133,.14),rgba(22,160,133,.04));border-color:rgba(22,160,133,.35);}',
+        '#ipo .res .big b{font-size:1.12rem;color:#0e7c66;}',
+        '#ipo .res .pos b{color:#15803d;} #ipo .res .neg b{color:#dc2626;}',
+        '#ipo .note{font-size:.72rem;font-weight:700;margin-top:7px;color:#0e7c66;}',
+        '#ipo .note.warn{color:#b45309;}',
+        '#ipo .acts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}',
+        '#ipo .acts button{flex:1;min-width:170px;border:none;border-radius:9px;padding:8px 10px;font-weight:800;font-size:.76rem;cursor:pointer;color:#fff;background:linear-gradient(135deg,#16a085,#0e6655);}',
+        '#ipo .acts button:disabled{opacity:.45;cursor:not-allowed;}',
+        '@media (max-width:560px){#ipo .pg{grid-template-columns:1fr 1fr;}#ipo .res{grid-template-columns:1fr 1fr;}}'
     ].join('\n');
 
+    function linked() {
+        var id = window._invMLinkedProductId; if (id == null) return null;
+        try { return (JSON.parse(localStorage.getItem('covo_products')) || []).find(function (p) { return String(p.id) === String(id); }) || null; } catch (e) { return null; }
+    }
+    function btn(u) { return document.querySelector('#inv-m-unit-toggle [data-unit="' + u + '"]'); }
+
     function build() {
-        var modal = $('inv-newprod-modal'), err = $('inv-np-error');
-        if (!modal || !err || $('inv-kgc')) return !!$('inv-kgc');
-        if (!$('inv-kgc-css')) { var st = document.createElement('style'); st.id = 'inv-kgc-css'; st.textContent = CSS; document.head.appendChild(st); }
-        var opener = document.createElement('button'); opener.type = 'button'; opener.id = 'inv-kgc-open';
-        opener.textContent = '⚖️ Calculer au poids (prix au kg et par portion)';
-        var box = document.createElement('div'); box.id = 'inv-kgc';
-        box.innerHTML = '<div class="kh"><span>⚖️ Calcul au poids</span><span style="font-weight:700;color:var(--gray,#999);font-size:.68rem;">ex. 2 kg à 33 € ÷ 0,25 kg</span></div>'
-            + '<div class="kg3"><div><label>Poids acheté (kg)</label><input id="kgc-w" type="number" min="0" step="0.001" inputmode="decimal" placeholder="2"></div>'
-            + '<div><label>Prix d’achat total (€)</label><input id="kgc-p" type="number" min="0" step="0.01" inputmode="decimal" placeholder="33"></div>'
-            + '<div><label>Portion (kg)</label><input id="kgc-s" type="number" min="0" step="0.001" inputmode="decimal" placeholder="0,25"></div></div>'
-            + '<div class="chips" id="kgc-sc"><span>Portion</span>' + [0.1, 0.125, 0.2, 0.25, 0.5, 1].map(function (v) { return '<button type="button" data-s="' + v + '">' + kgTxt(v) + '</button>'; }).join('') + '</div>'
-            + '<div class="chips" id="kgc-cc"><span>Coef. de vente</span>' + [1.3, 1.5, 1.8, 2, 2.5].map(function (v) { return '<button type="button" data-c="' + v + '">×' + String(v).replace('.', ',') + '</button>'; }).join('') + '<input id="kgc-c" type="number" min="0" step="0.05" inputmode="decimal" placeholder="×" style="width:64px;padding:4px 7px;font-size:.78rem;"></div>'
-            + '<div class="res" id="kgc-res"></div><div class="acts"><button type="button" id="kgc-kg">✔ Vendre au kg</button><button type="button" class="alt" id="kgc-por">✔ Vendre à la portion</button></div>';
-        var anchor = err;
-        modal.querySelector('div[style*="padding:18px 20px"]').insertBefore(opener, anchor);
-        anchor.parentNode.insertBefore(box, anchor);
-        // la fenêtre peut devenir haute : on la rend défilable
-        var card = modal.firstElementChild; if (card) { card.style.maxHeight = '92vh'; card.style.overflowY = 'auto'; }
-        opener.addEventListener('click', function () { box.classList.add('on'); opener.style.display = 'none'; prefill(true); calc(); setTimeout(function () { var w = $('kgc-w'); if (w && !w.value) w.focus(); }, 30); });
-        box.addEventListener('input', calc);
-        box.addEventListener('click', function (e) {
-            var s = e.target.closest('[data-s]'); if (s) { $('kgc-s').value = s.getAttribute('data-s'); try { localStorage.setItem(PORT_KEY, s.getAttribute('data-s')); } catch (er) {} calc(); return; }
-            var c = e.target.closest('[data-c]'); if (c) { $('kgc-c').value = c.getAttribute('data-c'); try { localStorage.setItem(COEF_KEY, c.getAttribute('data-c')); } catch (er) {} calc(true); return; }
-            if (e.target.id === 'kgc-kg') return apply('kg');
-            if (e.target.id === 'kgc-por') return apply('portion');
+        if ($('ipo')) return true;
+        var tg = $('inv-m-unit-toggle'), qte = $('inv-m-qte'); if (!tg || !qte) return false;
+        if (!$('ipo-css')) { var st = document.createElement('style'); st.id = 'ipo-css'; st.textContent = CSS; document.head.appendChild(st); }
+        // bouton « Portion » à côté de Pack
+        var b = document.createElement('button'); b.type = 'button'; b.setAttribute('data-unit', 'portion');
+        b.title = 'Vente en portions / pochons : nombre de pochons, grammes par pochon, prix de vente';
+        b.style.cssText = 'padding:0 10px;border:none;background:var(--input-bg,#f5f5f5);color:#888;font-size:0.75rem;font-weight:700;cursor:pointer;border-left:1px solid var(--border-color,#e0e0e0);';
+        b.textContent = '⚖️ Portion';
+        b.addEventListener('click', function () { enter(); });
+        tg.appendChild(b);
+        // un clic de l'utilisateur sur U / Kg / Pack quitte le mode portion
+        tg.addEventListener('click', function (e) { var x = e.target.closest('button[data-unit]'); if (x && x.getAttribute('data-unit') !== 'portion') leave(); }, true);
+        // panneau
+        var box = document.createElement('div'); box.id = 'ipo';
+        box.innerHTML = '<div class="ph"><span>⚖️ Vente en portions / pochons</span><small>poids acheté + montant total → nombre de pochons, coût et recette</small></div>'
+            + '<div class="pg">'
+            + '<div><label for="ipo-w">Poids acheté (kg)</label><input id="ipo-w" type="number" min="0" step="0.001" placeholder="ex. 2"></div>'
+            + '<div><label for="ipo-g">Grammes par pochon</label><input id="ipo-g" type="number" min="1" step="1" placeholder="ex. 250">'
+            + '<div class="chips" id="ipo-gc">' + [50, 100, 125, 200, 250, 500].map(function (g) { return '<button type="button" data-g="' + g + '">' + g + ' g</button>'; }).join('') + '</div></div>'
+            + '<div><label for="ipo-n">Nombre de pochons</label><input id="ipo-n" type="number" min="1" step="1" placeholder="ex. 8"></div>'
+            + '<div><label for="ipo-pv">Prix de vente / pochon (€)</label><input id="ipo-pv" type="number" min="0" step="0.01" placeholder="ex. 2">'
+            + '<div class="chips" id="ipo-pc">' + [1, 2, 3, 5].map(function (v) { return '<button type="button" data-pv="' + v + '">' + v + ' €</button>'; }).join('') + '<button type="button" data-k="2" title="Deux fois le coût du pochon">×2 coût</button></div></div>'
+            + '</div>'
+            + '<div class="res" id="ipo-res"></div>'
+            + '<div class="note" id="ipo-note"></div>'
+            + '<div class="acts"><button type="button" id="ipo-apply" disabled>🏷️ Appliquer ce prix de vente au produit</button></div>';
+        var anchor = $('ivm-pv');
+        if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(box, anchor);
+        else { var pr = $('inv-m-pack-row'); pr.parentNode.insertBefore(box, pr.nextSibling); }
+        $('ipo-w').addEventListener('input', function () { if (num($('ipo-g').value) > 0) fromG(); else if (num($('ipo-n').value) > 0) fromN(); else calc(); });
+        $('ipo-g').addEventListener('input', fromG);
+        $('ipo-n').addEventListener('input', fromN);
+        $('ipo-pv').addEventListener('input', function () { lsSet(PV_KEY, $('ipo-pv').value); calc(); });
+        $('ipo-gc').addEventListener('click', function (e) { var x = e.target.closest('[data-g]'); if (!x) return; $('ipo-g').value = x.getAttribute('data-g'); fromG(); });
+        $('ipo-pc').addEventListener('click', function (e) {
+            var x = e.target.closest('button'); if (!x) return;
+            if (x.hasAttribute('data-k')) { if (!(R && R.cout > 0)) { toast('Saisissez d’abord le poids, les pochons et le montant total', 'info'); return; } $('ipo-pv').value = (Math.ceil(R.cout * +x.getAttribute('data-k') * 10) / 10).toFixed(2); }
+            else $('ipo-pv').value = (+x.getAttribute('data-pv')).toFixed(2);
+            lsSet(PV_KEY, $('ipo-pv').value); calc();
         });
-        $('kgc-c').addEventListener('change', function () { try { localStorage.setItem(COEF_KEY, this.value); } catch (er) {} calc(true); });
-        $('inv-np-price').addEventListener('input', function () { if (box.classList.contains('on')) calc(); });
-        $('inv-np-unit').addEventListener('change', sync);
+        $('ipo-apply').addEventListener('click', applyPrice);
+        var m = $('inv-m-montant'); if (m) m.addEventListener('input', function () { if (on) calc(); });
+        // produit associé / paiement modifiés → recalcul (unité enregistrée, bouton prix de vente)
+        var md = $('inv-add-modal'), tm = null;
+        if (md) ['change', 'click'].forEach(function (ev) { md.addEventListener(ev, function (e) { if (!on || (e.target && e.target.closest && e.target.closest('#ipo'))) return; clearTimeout(tm); tm = setTimeout(calc, 60); }); });
         return true;
     }
-    /* données de l'achat en cours (quantité en kg + montant total) */
-    function prefill(force) {
-        var unit = window._invMSelectedUnit, q = num(($('inv-m-qte') || {}).value), m = num(($('inv-m-montant') || {}).value);
-        if ((force || !$('kgc-w').value) && unit === 'kg' && q > 0) $('kgc-w').value = q;
-        if ((force || !$('kgc-p').value) && m > 0) $('kgc-p').value = m;
-        if (!$('kgc-s').value) $('kgc-s').value = localStorage.getItem(PORT_KEY) || '0.25';
-        if (!$('kgc-c').value) $('kgc-c').value = localStorage.getItem(COEF_KEY) || '';
+    /* pleine largeur, juste avant le bloc « prix de vente » de la fenêtre Nouvel achat */
+    function place() {
+        var box = $('ipo'), anchor = $('ivm-pv');
+        if (box && anchor && anchor.parentNode && box.nextSibling !== anchor) anchor.parentNode.insertBefore(box, anchor);
     }
-    function sync() {
-        var box = $('inv-kgc'), op = $('inv-kgc-open'); if (!box) return;
-        var kg = $('inv-np-unit').value === 'kg';
-        if (kg) { box.classList.add('on'); op.style.display = 'none'; prefill(false); calc(); }
-        else if (!pendingPortion) { box.classList.remove('on'); op.style.display = ''; }
+    function fromG() {
+        var w = num($('ipo-w').value), g = num($('ipo-g').value);
+        if (g > 0) lsSet(G_KEY, String(g));
+        $('ipo-n').value = (w > 0 && g > 0) ? Math.floor(w * 1000 / g + 1e-9) : '';
+        calc();
     }
-    var R = null;
-    function calc(fromCoef) {
-        var w = num($('kgc-w').value), p = num($('kgc-p').value), s = num($('kgc-s').value), c = num($('kgc-c').value);
-        var res = $('kgc-res'), bk = $('kgc-kg'), bp = $('kgc-por');
-        document.querySelectorAll('#kgc-sc [data-s]').forEach(function (b) { b.classList.toggle('on', Math.abs(+b.getAttribute('data-s') - s) < 1e-9); });
-        document.querySelectorAll('#kgc-cc [data-c]').forEach(function (b) { b.classList.toggle('on', Math.abs(+b.getAttribute('data-c') - c) < 1e-9); });
-        if (!(w > 0) || !(p > 0) || !(s > 0)) {
-            res.innerHTML = '<div class="big"><small>Résultat</small><b>Indiquez le poids acheté, le prix total et la portion</b><i>Exemple : 2 kg à 33 € en portions de 0,25 kg</i></div>';
-            bk.disabled = bp.disabled = true; R = null; return;
+    function fromN() {
+        var w = num($('ipo-w').value), n = Math.floor(num($('ipo-n').value));
+        $('ipo-g').value = (w > 0 && n > 0) ? Math.floor(w * 1000 / n) : '';
+        calc();
+    }
+    /* unité réellement enregistrée : pochons (U) ou kg si le produit associé est vendu au poids */
+    function baseUnit() { var p = linked(); return p && p.unitType === 'kg' ? 'kg' : 'unit'; }
+    function styleToggle() {
+        document.querySelectorAll('#inv-m-unit-toggle button').forEach(function (b) {
+            var a = on ? b.getAttribute('data-unit') === 'portion' : b.getAttribute('data-unit') === (window._invMSelectedUnit || 'unit');
+            b.style.background = a ? (on ? '#16a085' : '#9b59b6') : 'var(--input-bg,#f5f5f5)';
+            b.style.color = a ? 'white' : '#888'; b.style.fontWeight = a ? '800' : '700';
+        });
+    }
+    function calc() {
+        if (!on) return;
+        var w = num($('ipo-w').value), g = num($('ipo-g').value), n = Math.floor(num($('ipo-n').value)), pv = num($('ipo-pv').value);
+        var montant = window._invMSelectedPay === 'offert' ? 0 : num(($('inv-m-montant') || {}).value);
+        var res = $('ipo-res'), note = $('ipo-note'), kgProd = baseUnit() === 'kg', p = linked();
+        document.querySelectorAll('#ipo-gc [data-g]').forEach(function (b) { b.classList.toggle('on', +b.getAttribute('data-g') === g); });
+        document.querySelectorAll('#ipo-pc [data-pv]').forEach(function (b) { b.classList.toggle('on', Math.abs(+b.getAttribute('data-pv') - pv) < 0.001); });
+        // quantité enregistrée
+        if (window._invMSelectedUnit !== baseUnit()) window._invMSelectedUnit = baseUnit();
+        var q = $('inv-m-qte');
+        if (q) { q.readOnly = true; q.style.opacity = '0.6'; q.step = kgProd ? '0.001' : '1'; q.value = kgProd ? (w > 0 ? w : '') : (n > 0 ? n : ''); }
+        if (typeof window.invMCalcUnit === 'function') try { window.invMCalcUnit(); } catch (e) {}
+        styleToggle();
+        if (!(w > 0) || !(n > 0) || !(g > 0)) {
+            R = null;
+            res.innerHTML = '<div class="big"><small>Résultat</small><b>Indiquez le poids acheté et les grammes (ou le nombre) de pochons</b><i>Exemple : 2 kg en pochons de 250 g → 8 pochons</i></div>';
+            note.textContent = ''; $('ipo-apply').disabled = true; return;
         }
-        var nb = Math.floor(w / s + 1e-9), reste = Math.max(0, Math.round((w - nb * s) * 1000) / 1000);
-        var achatKg = p / w, achatPortion = achatKg * s;
-        // prix de vente au kg : coefficient choisi, sinon le prix saisi dans « Prix de vente »
-        var pvKg = c > 0 ? Math.round(achatKg * c * 100) / 100 : num($('inv-np-price').value) || 0;
-        if (fromCoef && c > 0 && $('inv-np-unit').value === 'kg') $('inv-np-price').value = pvKg.toFixed(2);
-        var pvPortion = Math.round(pvKg * s * 100) / 100;
-        var marge = pvKg > 0 ? (pvPortion - achatPortion) * nb : 0;
-        R = { w: w, p: p, s: s, nb: nb, reste: reste, achatKg: achatKg, achatPortion: achatPortion, pvKg: pvKg, pvPortion: pvPortion };
-        res.innerHTML = '<div class="big"><small>Nombre de portions</small><b>' + nb + ' portion' + (nb > 1 ? 's' : '') + ' de ' + kgTxt(s) + '</b><i>' + kgTxt(w) + ' achetés pour ' + eur(p) + (reste > 0 ? ' · reste ' + kgTxt(reste) : '') + '</i></div>'
-            + '<div><small>Prix d’achat au kg</small><b>' + eur(achatKg) + '</b><i>' + eur(p) + ' ÷ ' + kgTxt(w) + '</i></div>'
-            + '<div><small>Prix d’achat / portion</small><b>' + eur(achatPortion) + '</b><i>' + eur(achatKg) + ' × ' + kgTxt(s) + '</i></div>'
-            + (pvKg > 0
-                ? '<div><small>Prix de vente au kg</small><b>' + eur(pvKg) + '</b><i>' + (c > 0 ? 'coefficient ×' + String(c).replace('.', ',') : 'prix saisi') + '</i></div>'
-                + '<div><small>Prix de vente / portion</small><b>' + eur(pvPortion) + '</b><i>marge totale ≈ ' + eur(marge) + '</i></div>'
-                : '<div style="grid-column:1/-1"><small>Prix de vente</small><b style="font-size:.82rem">Choisissez un coefficient ou saisissez le prix de vente au kg</b></div>');
-        bk.disabled = bp.disabled = !(pvKg > 0);
-        bk.textContent = '✔ Vendre au kg' + (pvKg > 0 ? ' · ' + eur(pvKg) + '/kg' : '');
-        bp.textContent = '✔ Vendre à la portion' + (pvKg > 0 ? ' · ' + eur(pvPortion) + ' les ' + kgTxt(s) : '');
-    }
-    function apply(mode) {
-        if (!R || !(R.pvKg > 0)) return;
-        var unitEl = $('inv-np-unit'), priceEl = $('inv-np-price'), nameEl = $('inv-np-name');
-        if (mode === 'kg') {
-            unitEl.value = 'kg'; priceEl.value = R.pvKg.toFixed(2); pendingPortion = null;
-            toast('⚖️ Produit au kg : ' + eur(R.pvKg) + '/kg (achat ' + eur(R.achatKg) + '/kg)');
-        } else {
-            unitEl.value = 'unit'; priceEl.value = R.pvPortion.toFixed(2);
-            var lbl = kgTxt(R.s);
-            if (nameEl && nameEl.value.trim() && nameEl.value.indexOf(lbl) < 0) nameEl.value = nameEl.value.trim() + ' ' + lbl;
-            pendingPortion = { nb: R.nb, total: R.p };
-            toast('🧩 Vendu à la portion (' + lbl + ') : ' + eur(R.pvPortion) + ' — l’achat passera à ' + R.nb + ' unités');
+        var used = n * g, reste = Math.max(0, Math.round(w * 1000 - used));
+        var cout = montant > 0 ? montant / n : 0, ca = pv * n, resu = ca - montant;
+        R = { w: w, g: g, n: n, pv: pv, montant: montant, cout: cout, ca: ca, resu: resu, reste: reste };
+        var h = '<div class="big"><small>Nombre de pochons</small><b>' + n + ' pochon' + (n > 1 ? 's' : '') + ' de ' + gTxt(g) + '</b><i>' + gTxt(w * 1000) + ' achetés' + (montant > 0 ? ' pour ' + eur(montant) : '') + (reste > 0 ? ' · reste ' + gTxt(reste) : ' · tout est utilisé') + '</i></div>';
+        h += '<div><small>Coût d’un pochon</small><b>' + (cout > 0 ? eur(cout) : '—') + '</b><i>' + (cout > 0 ? eur(montant) + ' ÷ ' + n : 'saisissez le montant total') + '</i></div>';
+        h += '<div><small>Prix au kg (achat)</small><b>' + (montant > 0 ? eur(montant / w) : '—') + '</b><i>' + (montant > 0 ? eur(montant) + ' ÷ ' + gTxt(w * 1000) : '') + '</i></div>';
+        h += '<div><small>Prix au kg (vente)</small><b>' + (pv > 0 ? eur(pv * 1000 / g) : '—') + '</b><i>' + (pv > 0 ? eur(pv) + ' les ' + gTxt(g) : 'saisissez le prix du pochon') + '</i></div>';
+        if (pv > 0) {
+            h += '<div class="pos"><small>Recette si tout est vendu</small><b>' + eur(ca) + '</b><i>' + n + ' × ' + eur(pv) + '</i></div>';
+            if (montant > 0) {
+                h += '<div class="' + (resu >= 0 ? 'pos' : 'neg') + '"><small>' + (resu >= 0 ? 'Bénéfice' : 'Perte') + '</small><b>' + (resu >= 0 ? '+' : '−') + eur(Math.abs(resu)) + '</b><i>' + (ca > 0 ? 'marge ' + Math.round(resu / ca * 100) + ' % · coef ×' + (ca / montant).toFixed(2).replace('.', ',') : '') + '</i></div>';
+                h += '<div><small>Prix mini / pochon</small><b>' + eur(Math.ceil(cout * 100) / 100) + '</b><i>pour ne pas perdre</i></div>';
+            }
         }
+        res.innerHTML = h;
+        var msg = '', warn = false;
+        if (pv > 0 && montant > 0 && resu < 0) { msg = '⚠️ À ' + eur(pv) + ' le pochon, la vente ne couvre pas l’achat : il faut au moins ' + eur(Math.ceil(cout * 100) / 100) + ' par pochon.'; warn = true; }
+        else if (kgProd) msg = '⚖️ « ' + p.name + ' » est vendu au kg : le stock recevra ' + gTxt(w * 1000) + ' ; les pochons servent au calcul.';
+        else msg = '📦 L’achat sera enregistré en ' + n + ' pochon' + (n > 1 ? 's' : '') + ' (stock en unités)' + (p ? ' pour « ' + p.name + ' »' : '') + '.';
+        note.textContent = msg; note.className = 'note' + (warn ? ' warn' : '');
+        var ap = $('ipo-apply');
+        ap.disabled = !(pv > 0);
+        ap.textContent = p ? '🏷️ Appliquer ' + (kgProd ? eur(pv * 1000 / g) + '/kg' : eur(pv) + ' le pochon') + ' comme prix de vente de « ' + p.name + ' »' : '🏷️ Associez ou créez le produit pour lui appliquer ce prix';
+        if (!p) ap.disabled = true;
     }
-    function toast(m) { if (typeof showScanToast === 'function') showScanToast(m, 'success'); }
-    /* après création : achat en cours converti en portions (unités) quand « Vendre à la portion » a été choisi */
-    function afterCreate() {
-        var pp = pendingPortion; pendingPortion = null;
-        if (!pp) return;
-        var ub = document.querySelector('#inv-m-unit-toggle [data-unit="unit"]') || document.querySelector('[data-unit="unit"]');
-        if (ub && typeof window.invMSelectUnit === 'function') window.invMSelectUnit(ub);
-        var q = $('inv-m-qte'); if (q) { q.value = pp.nb; q.dispatchEvent(new Event('input', { bubbles: true })); }
-        var m = $('inv-m-montant'); if (m && !(num(m.value) > 0)) { m.value = pp.total.toFixed(2); m.dispatchEvent(new Event('input', { bubbles: true })); }
+    function applyPrice() {
+        if (!R || !(R.pv > 0)) return;
+        var p = linked(); if (!p) return;
+        var cb = $('ivm-pv-on'), nv = $('ivm-pv-new'); if (!cb || !nv) return;
+        nv.value = (baseUnit() === 'kg' ? R.pv * 1000 / R.g : R.pv).toFixed(2);
+        if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
+        nv.dispatchEvent(new Event('input', { bubbles: true }));
+        toast('🏷️ Le prix de vente sera mis à jour à l’enregistrement de l’achat');
     }
+    function enter() {
+        if (!build()) return;
+        var wasKg = window._invMSelectedUnit === 'kg', q = num(($('inv-m-qte') || {}).value);
+        var ub = btn(baseUnit());
+        if (ub && origSel) origSel.call(window, ub);       // remet l'état normal (masque le pack…)
+        on = true;
+        $('ipo').classList.add('on');
+        if (!$('ipo-w').value && wasKg && q > 0) $('ipo-w').value = q;
+        if (!$('ipo-g').value && !$('ipo-n').value) $('ipo-g').value = lsGet(G_KEY) || '250';
+        if (!$('ipo-pv').value && lsGet(PV_KEY)) $('ipo-pv').value = lsGet(PV_KEY);
+        if (num($('ipo-g').value) > 0) fromG(); else fromN();
+        setTimeout(function () { var w = $('ipo-w'); if (w && !w.value) w.focus(); }, 40);
+    }
+    function leave() {
+        if (!on) return;
+        on = false; R = null;
+        var box = $('ipo'); if (box) box.classList.remove('on');
+        var q = $('inv-m-qte'); if (q) { q.readOnly = false; q.style.opacity = '1'; q.value = ''; }
+    }
+    function reset() {
+        on = false; R = null;
+        var box = $('ipo'); if (box) box.classList.remove('on');
+        ['ipo-w', 'ipo-g', 'ipo-n', 'ipo-pv'].forEach(function (id) { if ($(id)) $(id).value = ''; });
+    }
+
+    var origSel = null;
     function boot() {
-        if (!$('inv-newprod-modal') || typeof window.invOpenNewProductModal !== 'function' || typeof window.invCreateProductFromPurchase !== 'function') {
+        if (!$('inv-add-modal') || typeof window.invMSelectUnit !== 'function' || typeof window.invOpenAddModal !== 'function' || typeof window.invModalSubmit !== 'function') {
             if ((boot.n = (boot.n || 0) + 1) < 200) setTimeout(boot, 300); return;
         }
-        build();
-        var open = window.invOpenNewProductModal;
-        window.invOpenNewProductModal = function () {
+        origSel = window.invMSelectUnit;
+        // appels automatiques (ex. produit au kg associé) : en mode portion on garde le panneau et on recalcule
+        window.invMSelectUnit = function (b) {
+            if (on) { calc(); return; }
+            return origSel.apply(this, arguments);
+        };
+        var open = window.invOpenAddModal;
+        window.invOpenAddModal = function () {
+            reset();
             var r = open.apply(this, arguments);
+            try { build(); place(); styleToggle(); } catch (e) {}
+            return r;
+        };
+        var submit = window.invModalSubmit;
+        window.invModalSubmit = function () {
+            var snap = null, before = 0;
+            if (on) {
+                calc();
+                if (!R) { toast('Portion : indiquez le poids acheté et les grammes (ou le nombre) de pochons', 'info'); return; }
+                snap = { poidsKg: R.w, grammes: R.g, nb: R.n, prixVente: R.pv || null, recette: R.pv ? Math.round(R.ca * 100) / 100 : null, coutPochon: R.cout ? Math.round(R.cout * 100) / 100 : null, resteG: R.reste, stockEn: baseUnit() === 'kg' ? 'kg' : 'pochons' };
+                try { before = (JSON.parse(localStorage.getItem('covo_approvisionnements')) || []).length; } catch (e) {}
+            }
+            var r = submit.apply(this, arguments);
+            if (snap) {
+                try {
+                    var list = JSON.parse(localStorage.getItem('covo_approvisionnements')) || [];
+                    if (list.length > before && list[0] && !list[0].portion) {
+                        list[0].portion = snap;
+                        if (typeof invSave === 'function') invSave(list); else localStorage.setItem('covo_approvisionnements', JSON.stringify(list));
+                        if (typeof invRender === 'function') invRender();
+                    }
+                } catch (er) {}
+            }
+            return r;
+        };
+        // création d'un produit pendant le mode portion : produit à l'unité, prix du pochon, nom « … 250 g »
+        var openNP = window.invOpenNewProductModal;
+        if (typeof openNP === 'function') window.invOpenNewProductModal = function () {
+            var r = openNP.apply(this, arguments);
             try {
-                pendingPortion = null;
-                ['kgc-w', 'kgc-p', 'kgc-s', 'kgc-c'].forEach(function (id) { if ($(id)) $(id).value = ''; });
-                $('inv-kgc').classList.remove('on'); $('inv-kgc-open').style.display = '';
-                sync();
+                if (on && R) {
+                    var u = $('inv-np-unit'), pr = $('inv-np-price'), nm = $('inv-np-name');
+                    if (u) u.value = 'unit';
+                    if (pr && R.pv > 0) pr.value = R.pv.toFixed(2);
+                    var lbl = gTxt(R.g);
+                    if (nm && nm.value.trim() && nm.value.indexOf(lbl) < 0) nm.value = nm.value.trim() + ' ' + lbl;
+                }
             } catch (e) {}
             return r;
         };
-        var create = window.invCreateProductFromPurchase;
-        window.invCreateProductFromPurchase = function () {
-            var before = window._invMLinkedProductId;
-            // les quantités « portions » doivent être en place AVANT un éventuel enregistrement automatique de l'achat
-            var pp = pendingPortion;
-            var valid = !!(($('inv-np-name') || {}).value || '').trim() && num(($('inv-np-price') || {}).value) >= 0 && String(($('inv-np-price') || {}).value).trim() !== '';
-            if (pp && valid) {
-                var ub = document.querySelector('[data-unit="unit"]');
-                if (ub && typeof window.invMSelectUnit === 'function') window.invMSelectUnit(ub);
-                var q = $('inv-m-qte'); if (q) q.value = pp.nb;
-                var m = $('inv-m-montant'); if (m && !(num(m.value) > 0)) m.value = pp.total.toFixed(2);
+        var createNP = window.invCreateProductFromPurchase;
+        if (typeof createNP === 'function') window.invCreateProductFromPurchase = function () {
+            if (on) {
+                // le produit créé détermine l'unité enregistrée : on prépare la quantité avant un éventuel enregistrement automatique
+                var u = ($('inv-np-unit') || {}).value === 'kg' ? 'kg' : 'unit', q = $('inv-m-qte');
+                window._invMSelectedUnit = u;
+                if (q && R) q.value = u === 'kg' ? R.w : R.n;
             }
-            var r = create.apply(this, arguments);
-            try { if (window._invMLinkedProductId !== before) afterCreate(); else if (pp) pendingPortion = pp; } catch (e) {}
+            var r = createNP.apply(this, arguments);
+            try { if (on && $('inv-add-modal') && $('inv-add-modal').style.display !== 'none') calc(); } catch (e) {}
             return r;
         };
+        // affichage dans la liste des achats
+        var origRender = window.invRender;
+        if (typeof origRender === 'function') {
+            var wrapR = function () {
+                var r = origRender.apply(this, arguments);
+                try { tagList(); } catch (e) {}
+                return r;
+            };
+            window.invRender = wrapR;
+            try { invRender = wrapR; } catch (e) {}
+        }
+        build();
+    }
+    function tagList() {
+        var listEl = $('inv-list'); if (!listEl) return;
+        var L; try { L = JSON.parse(localStorage.getItem('covo_approvisionnements')) || []; } catch (e) { return; }
+        var map = {}; L.forEach(function (e) { if (e && e.portion) map[e.id] = e; });
+        if (!Object.keys(map).length) return;
+        listEl.querySelectorAll('[onclick*="invOpenEdit("]').forEach(function (row) {
+            var m = /invOpenEdit\('((?:\\'|[^'])*)'\)/.exec(row.getAttribute('onclick') || ''); if (!m) return;
+            var e = map[m[1].replace(/\\'/g, "'")];
+            if (!e || row.querySelector('.ipo-tag')) return;
+            var p = e.portion, s = document.createElement('span'); s.className = 'ipo-tag';
+            s.style.cssText = 'color:#0e7c66;font-weight:700;';
+            s.textContent = '⚖️ ' + p.nb + ' pochon' + (p.nb > 1 ? 's' : '') + ' de ' + gTxt(p.grammes) + (p.prixVente ? ' · ' + eur(p.prixVente) + ' pièce → ' + eur(p.recette) : '');
+            var l2 = row.querySelector('.ivp-l2'); (l2 || row).appendChild(s);
+        });
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
