@@ -5673,7 +5673,7 @@ window.cpMaybeShowInstallBanner = function(){
                     h += '<div style="font-size:.68rem;font-weight:900;color:var(--ivp-mute);text-transform:uppercase;letter-spacing:.4px;margin:10px 0 4px;">Achats de ce produit (' + others.length + ')</div><div class="ive-hist">'
                         + others.slice(0, 6).map(function (x) { return '<div class="' + (x.id === e.id ? 'me' : '') + '"><span class="n">#' + esc(x.numero) + '</span><span>' + dFr(x.date, { day: '2-digit', month: 'short', year: '2-digit' }) + (x.fournisseur ? ' · ' + esc(x.fournisseur) : '') + '</span><span class="p">' + (x.paiement === 'offert' ? '🎁 offert' : (x.prixUnit ? eur(x.prixUnit) + '/' + (x.unitType === 'kg' ? 'kg' : 'u.') : eur(x.montant))) + '</span></div>'; }).join('') + '</div>';
                 }
-                if (q && e.qte && Math.abs(q - e.qte) > 0.0005) alerts.push(['warn', '📦 Quantité modifiée (' + e.qte + ' → ' + q + ') : le stock de « ' + esc(p.name) + ' » ne sera <b>pas</b> corrigé automatiquement. Ajustez-le dans la fiche produit si nécessaire.']);
+                if (q && e.qte && Math.abs(q - e.qte) > 0.0005) alerts.push((window._ipxSyncOn && window._ipxSyncOn()) ? ['info', '📦 Quantité modifiée (' + e.qte + ' → ' + q + ') : le stock de « ' + esc(p.name) + ' » sera corrigé à l’enregistrement.'] : ['warn', '📦 Quantité modifiée (' + e.qte + ' → ' + q + ') : le stock de « ' + esc(p.name) + ' » ne sera <b>pas</b> corrigé (option « Mettre à jour le produit lié » décochée).']);
                 if (sp > 0 && pu > sp) alerts.push(['bad', '⚠️ Avec ce montant, le prix d’achat (' + eur(pu) + ') dépasse le prix de vente (' + eur(sp) + ').']);
             } else alerts.push(['bad', '⚠️ Le produit lié a été supprimé du catalogue : les informations ci-dessus sont celles enregistrées à la création.']);
             h += '</div>';
@@ -7442,7 +7442,9 @@ window.cpMaybeShowInstallBanner = function(){
 </html>
 <script>
 /* ════════════════════════════════════════════════════════════════════════
-   APPROVISIONNEMENT PRO — MODE « PORTION » (fenêtre Nouvel achat, à côté de Pack)
+   APPROVISIONNEMENT PRO — MODE « PORTION » (Nouvel achat ET fiche d'un achat existant, à côté de Pack)
+   Modification d'un achat : option « Mettre à jour le produit lié » (stock corrigé de la différence
+   de quantité + prix d'achat si c'est l'achat le plus récent du produit)
    Exemple : 2 kg achetés 33 € · pochons de 250 g · vendus 2 € pièce
      → 8 pochons · coût 4,13 € le pochon · CA 16,00 € · résultat −17,00 €
    Le nombre de pochons et les grammes par pochon sont liés dans les deux sens :
@@ -7467,227 +7469,336 @@ window.cpMaybeShowInstallBanner = function(){
     function pG(v) { var t = String(v || '').toLowerCase(), n = num(t); if (/kg/.test(t)) return n * 1000; if (/g/.test(t)) return n; return n > 0 && n < 1 ? n * 1000 : n; }
     /* calculs en milligrammes entiers (évite 2,38 ÷ 0,035 = 67,999…) */
     function nbPochons(w, g) { var a = Math.round(w * 1e6), b = Math.round(g * 1000); return a > 0 && b > 0 ? Math.floor(a / b) : 0; }
+    function esc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, function (ch) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]; }); }
     function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
     function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
     function toast(m, t) { if (typeof showScanToast === 'function') showScanToast(m, t || 'success'); }
     var G_KEY = 'covo_inv_portion_g', PV_KEY = 'covo_inv_portion_pv';
-    var on = false, R = null;
-
     var CSS = [
-        '#inv-m-unit-toggle button[data-unit="portion"]{white-space:nowrap;}',
-        '#ipo{display:none;border:1.5px solid rgba(22,160,133,.4);background:rgba(22,160,133,.06);border-radius:11px;padding:11px 12px;margin:10px 0 4px;}',
-        '#ipo.on{display:block;}',
-        '#ipo .ph{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.8rem;font-weight:800;color:#0e7c66;margin-bottom:8px;}',
-        '#ipo .ph small{font-weight:600;color:var(--gray,#7f8c8d);font-size:.68rem;}',
-        '#ipo .pg{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}',
-        '#ipo .pg>div{display:flex;flex-direction:column;justify-content:flex-start;}',
-        '#ipo label{min-height:2.2em;display:flex !important;align-items:flex-end;font-size:.62rem;font-weight:800;color:var(--gray,#7f8c8d);text-transform:uppercase;margin-bottom:3px;}',
-        '#ipo input{width:100%;padding:8px 9px;border:1.5px solid rgba(22,160,133,.35);border-radius:8px;font-size:.92rem;font-weight:700;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);}',
-        '#ipo .hint{font-size:.68rem;font-weight:800;color:#0e7c66;min-height:1em;margin-top:3px;}',
-        '#ipo .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;}',
-        '#ipo .chips button{border:1px solid rgba(22,160,133,.45);background:var(--bg-card,#fff);color:#0e7c66;border-radius:999px;padding:2px 7px;font-size:.68rem;font-weight:800;cursor:pointer;}',
-        '#ipo .chips button.on{background:#16a085;color:#fff;border-color:#16a085;}',
-        '#ipo .res{margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}',
-        '#ipo .res div{background:var(--bg-card,#fff);border:1px solid var(--border-color,#e5e7eb);border-radius:9px;padding:7px 9px;min-width:0;}',
-        '#ipo .res small{display:block;font-size:.6rem;font-weight:800;text-transform:uppercase;color:var(--gray,#7f8c8d);}',
-        '#ipo .res b{display:block;font-size:.98rem;color:var(--text-main,#2c3e50);}',
-        '#ipo .res i{display:block;font-style:normal;font-size:.68rem;color:var(--gray,#7f8c8d);}',
-        '#ipo .res .big{grid-column:1/-1;background:linear-gradient(135deg,rgba(22,160,133,.14),rgba(22,160,133,.04));border-color:rgba(22,160,133,.35);}',
-        '#ipo .res .big b{font-size:1.12rem;color:#0e7c66;}',
-        '#ipo .res .pos b{color:#15803d;} #ipo .res .neg b{color:#dc2626;}',
-        '#ipo .note{font-size:.72rem;font-weight:700;margin-top:7px;color:#0e7c66;}',
-        '#ipo .note.warn{color:#b45309;}',
-        '#ipo .acts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}',
-        '#ipo .acts button{flex:1;min-width:170px;border:none;border-radius:9px;padding:8px 10px;font-weight:800;font-size:.76rem;cursor:pointer;color:#fff;background:linear-gradient(135deg,#16a085,#0e6655);}',
-        '#ipo .acts button:disabled{opacity:.45;cursor:not-allowed;}',
-        '@media (max-width:560px){#ipo .pg{grid-template-columns:1fr 1fr;}#ipo .res{grid-template-columns:1fr 1fr;}}'
+        'button[data-unit="portion"]{white-space:nowrap;}',
+        '.ipo-box{display:none;border:1.5px solid rgba(22,160,133,.4);background:rgba(22,160,133,.06);border-radius:11px;padding:11px 12px;margin:10px 0 4px;}',
+        '.ipo-box.on{display:block;}',
+        '.ipo-box .ph{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.8rem;font-weight:800;color:#0e7c66;margin-bottom:8px;}',
+        '.ipo-box .ph small{font-weight:600;color:var(--gray,#7f8c8d);font-size:.68rem;}',
+        '.ipo-box .pg{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}',
+        '.ipo-box .pg>div{display:flex;flex-direction:column;justify-content:flex-start;min-width:0;}',
+        '.ipo-box label{min-height:2.2em;display:flex !important;align-items:flex-end;font-size:.62rem;font-weight:800;color:var(--gray,#7f8c8d);text-transform:uppercase;margin-bottom:3px;}',
+        '.ipo-box input{width:100%;padding:8px 9px;border:1.5px solid rgba(22,160,133,.35);border-radius:8px;font-size:.92rem;font-weight:700;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#2c3e50);}',
+        '.ipo-box .hint{font-size:.68rem;font-weight:800;color:#0e7c66;min-height:1em;margin-top:3px;}',
+        '.ipo-box .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;}',
+        '.ipo-box .chips button{border:1px solid rgba(22,160,133,.45);background:var(--bg-card,#fff);color:#0e7c66;border-radius:999px;padding:2px 7px;font-size:.68rem;font-weight:800;cursor:pointer;}',
+        '.ipo-box .chips button.on{background:#16a085;color:#fff;border-color:#16a085;}',
+        '.ipo-box .res{margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}',
+        '.ipo-box .res div{background:var(--bg-card,#fff);border:1px solid var(--border-color,#e5e7eb);border-radius:9px;padding:7px 9px;min-width:0;}',
+        '.ipo-box .res small{display:block;font-size:.6rem;font-weight:800;text-transform:uppercase;color:var(--gray,#7f8c8d);}',
+        '.ipo-box .res b{display:block;font-size:.98rem;color:var(--text-main,#2c3e50);}',
+        '.ipo-box .res i{display:block;font-style:normal;font-size:.68rem;color:var(--gray,#7f8c8d);}',
+        '.ipo-box .res .big{grid-column:1/-1;background:linear-gradient(135deg,rgba(22,160,133,.14),rgba(22,160,133,.04));border-color:rgba(22,160,133,.35);}',
+        '.ipo-box .res .big b{font-size:1.12rem;color:#0e7c66;}',
+        '.ipo-box .res .pos b{color:#15803d;} .ipo-box .res .neg b{color:#dc2626;}',
+        '.ipo-box .note{font-size:.72rem;font-weight:700;margin-top:7px;color:#0e7c66;}',
+        '.ipo-box .note.warn{color:#b45309;}',
+        '.ipo-box .acts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}',
+        '.ipo-box .acts button{flex:1;min-width:170px;border:none;border-radius:9px;padding:8px 10px;font-weight:800;font-size:.76rem;cursor:pointer;color:#fff;background:linear-gradient(135deg,#16a085,#0e6655);}',
+        '.ipo-box .acts button:disabled{opacity:.45;cursor:not-allowed;}',
+        '#ipx-sync{margin-top:8px;border:1.5px solid rgba(37,99,235,.3);background:rgba(37,99,235,.06);border-radius:10px;padding:9px 11px;font-size:.78rem;}',
+        '#ipx-sync label{display:flex;align-items:center;gap:8px;font-weight:800;color:#1d4ed8;cursor:pointer;}',
+        '#ipx-sync input{width:17px;height:17px;accent-color:#2563eb;}',
+        '#ipx-sync .d{margin-top:5px;font-weight:700;color:var(--text-main,#334155);line-height:1.45;}',
+        '#ipx-sync .d.warn{color:#b45309;}',
+        '@media (max-width:560px){.ipo-box .pg{grid-template-columns:1fr 1fr;}.ipo-box .res{grid-template-columns:1fr 1fr;}}'
     ].join('\n');
-
-    function linked() {
-        var id = window._invMLinkedProductId; if (id == null) return null;
+    function css() { if (!$('ipo-css')) { var st = document.createElement('style'); st.id = 'ipo-css'; st.textContent = CSS; document.head.appendChild(st); } }
+    function productById(id) {
+        if (id == null) return null;
         try { return (JSON.parse(localStorage.getItem('covo_products')) || []).find(function (p) { return String(p.id) === String(id); }) || null; } catch (e) { return null; }
     }
-    function btn(u) { return document.querySelector('#inv-m-unit-toggle [data-unit="' + u + '"]'); }
 
-    function build() {
-        if ($('ipo')) return true;
-        var tg = $('inv-m-unit-toggle'), qte = $('inv-m-qte'); if (!tg || !qte) return false;
-        if (!$('ipo-css')) { var st = document.createElement('style'); st.id = 'ipo-css'; st.textContent = CSS; document.head.appendChild(st); }
-        // bouton « Portion » à côté de Pack
-        var b = document.createElement('button'); b.type = 'button'; b.setAttribute('data-unit', 'portion');
-        b.title = 'Vente en portions / pochons : nombre de pochons, grammes par pochon, prix de vente';
-        b.style.cssText = 'padding:0 10px;border:none;background:var(--input-bg,#f5f5f5);color:#888;font-size:0.75rem;font-weight:700;cursor:pointer;border-left:1px solid var(--border-color,#e0e0e0);';
-        b.textContent = '⚖️ Portion';
-        b.addEventListener('click', function () { enter(); });
-        tg.appendChild(b);
-        // un clic de l'utilisateur sur U / Kg / Pack quitte le mode portion
-        tg.addEventListener('click', function (e) { var x = e.target.closest('button[data-unit]'); if (x && x.getAttribute('data-unit') !== 'portion') leave(); }, true);
-        // panneau
-        var box = document.createElement('div'); box.id = 'ipo';
-        box.innerHTML = '<div class="ph"><span>⚖️ Vente en portions / pochons</span><small>poids acheté + montant total → nombre de pochons, coût et recette</small></div>'
-            + '<div class="pg">'
-            + '<div><label for="ipo-w">Poids acheté (kg)</label><input id="ipo-w" type="text" inputmode="decimal" autocomplete="off" placeholder="ex. 2,38"><div class="hint" id="ipo-wh"></div></div>'
-            + '<div><label for="ipo-g">Poids d’un pochon (g ou kg)</label><input id="ipo-g" type="text" inputmode="decimal" autocomplete="off" placeholder="ex. 35 ou 0,035"><div class="hint" id="ipo-gh"></div>'
-            + '<div class="chips" id="ipo-gc">' + [25, 35, 50, 100, 125, 250, 500].map(function (g) { return '<button type="button" data-g="' + g + '">' + g + ' g</button>'; }).join('') + '</div></div>'
-            + '<div><label for="ipo-n">Nombre de pochons</label><input id="ipo-n" type="number" min="1" step="1" placeholder="ex. 8"></div>'
-            + '<div><label for="ipo-pv">Prix de vente / pochon (€)</label><input id="ipo-pv" type="text" inputmode="decimal" autocomplete="off" placeholder="ex. 2">'
-            + '<div class="chips" id="ipo-pc">' + [1, 2, 3, 5].map(function (v) { return '<button type="button" data-pv="' + v + '">' + v + ' €</button>'; }).join('') + '<button type="button" data-k="2" title="Deux fois le coût du pochon">×2 coût</button></div></div>'
-            + '</div>'
-            + '<div class="res" id="ipo-res"></div>'
-            + '<div class="note" id="ipo-note"></div>'
-            + '<div class="acts"><button type="button" id="ipo-apply" disabled>🏷️ Appliquer ce prix de vente au produit</button></div>';
-        var anchor = $('ivm-pv');
-        if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(box, anchor);
-        else { var pr = $('inv-m-pack-row'); pr.parentNode.insertBefore(box, pr.nextSibling); }
-        $('ipo-w').addEventListener('input', function () { if (pG($('ipo-g').value) > 0) fromG(); else if (num($('ipo-n').value) > 0) fromN(); else calc(); });
-        $('ipo-g').addEventListener('input', fromG);
-        $('ipo-n').addEventListener('input', fromN);
-        $('ipo-pv').addEventListener('input', function () { lsSet(PV_KEY, $('ipo-pv').value); calc(); });
-        $('ipo-gc').addEventListener('click', function (e) { var x = e.target.closest('[data-g]'); if (!x) return; $('ipo-g').value = x.getAttribute('data-g'); fromG(); });
-        $('ipo-pc').addEventListener('click', function (e) {
-            var x = e.target.closest('button'); if (!x) return;
-            if (x.hasAttribute('data-k')) { if (!(R && R.cout > 0)) { toast('Saisissez d’abord le poids, les pochons et le montant total', 'info'); return; } $('ipo-pv').value = (Math.ceil(R.cout * +x.getAttribute('data-k') * 10) / 10).toFixed(2); }
-            else $('ipo-pv').value = (+x.getAttribute('data-pv')).toFixed(2);
-            lsSet(PV_KEY, $('ipo-pv').value); calc();
-        });
-        $('ipo-apply').addEventListener('click', applyPrice);
-        var m = $('inv-m-montant'); if (m) m.addEventListener('input', function () { if (on) calc(); });
-        // produit associé / paiement modifiés → recalcul (unité enregistrée, bouton prix de vente)
-        var md = $('inv-add-modal'), tm = null;
-        if (md) ['change', 'click'].forEach(function (ev) { md.addEventListener(ev, function (e) { if (!on || (e.target && e.target.closest && e.target.closest('#ipo'))) return; clearTimeout(tm); tm = setTimeout(calc, 60); }); });
-        return true;
-    }
-    /* pleine largeur, juste avant le bloc « prix de vente » de la fenêtre Nouvel achat */
-    function place() {
-        var box = $('ipo'), anchor = $('ivm-pv');
-        if (box && anchor && anchor.parentNode && box.nextSibling !== anchor) anchor.parentNode.insertBefore(box, anchor);
-    }
-    function fromG() {
-        var w = wKg($('ipo-w').value), g = pG($('ipo-g').value);
-        if (g > 0) lsSet(G_KEY, $('ipo-g').value);
-        var n = nbPochons(w, g);
-        $('ipo-n').value = n > 0 ? n : '';
-        calc();
-    }
-    function fromN() {
-        var w = wKg($('ipo-w').value), n = Math.floor(num($('ipo-n').value));
-        $('ipo-g').value = (w > 0 && n > 0) ? String(Math.floor(w * 1e6 / n / 100) / 10).replace('.', ',') : '';
-        calc();
-    }
-    /* unité réellement enregistrée : pochons (U) ou kg si le produit associé est vendu au poids */
-    function baseUnit() { var p = linked(); return p && p.unitType === 'kg' ? 'kg' : 'unit'; }
-    function styleToggle() {
-        document.querySelectorAll('#inv-m-unit-toggle button').forEach(function (b) {
-            var a = on ? b.getAttribute('data-unit') === 'portion' : b.getAttribute('data-unit') === (window._invMSelectedUnit || 'unit');
-            b.style.background = a ? (on ? '#16a085' : '#9b59b6') : 'var(--input-bg,#f5f5f5)';
-            b.style.color = a ? 'white' : '#888'; b.style.fontWeight = a ? '800' : '700';
-        });
-    }
-    function calc() {
-        if (!on) return;
-        var w = wKg($('ipo-w').value), g = pG($('ipo-g').value), n = Math.floor(num($('ipo-n').value)), pv = num($('ipo-pv').value);
-        var gv = String($('ipo-g').value || '').trim(), wv = String($('ipo-w').value || '').trim();
-        $('ipo-gh').textContent = g > 0 && !/^\d+\s*g?$/i.test(gv) ? '= ' + gTxt(g) + ' par pochon' : '';
-        $('ipo-wh').textContent = w > 0 && wv ? '= ' + gTxt(w * 1000) : '';
-        var montant = window._invMSelectedPay === 'offert' ? 0 : num(($('inv-m-montant') || {}).value);
-        var res = $('ipo-res'), note = $('ipo-note'), kgProd = baseUnit() === 'kg', p = linked();
-        document.querySelectorAll('#ipo-gc [data-g]').forEach(function (b) { b.classList.toggle('on', Math.abs(+b.getAttribute('data-g') - g) < 1e-6); });
-        document.querySelectorAll('#ipo-pc [data-pv]').forEach(function (b) { b.classList.toggle('on', Math.abs(+b.getAttribute('data-pv') - pv) < 0.001); });
-        // quantité enregistrée
-        if (window._invMSelectedUnit !== baseUnit()) window._invMSelectedUnit = baseUnit();
-        var q = $('inv-m-qte');
-        if (q) { q.readOnly = true; q.style.opacity = '0.6'; q.step = kgProd ? '0.001' : '1'; q.value = kgProd ? (w > 0 ? w : '') : (n > 0 ? n : ''); }
-        if (typeof window.invMCalcUnit === 'function') try { window.invMCalcUnit(); } catch (e) {}
-        styleToggle();
-        if (!(w > 0) || !(n > 0) || !(g > 0)) {
-            R = null;
-            res.innerHTML = '<div class="big"><small>Résultat</small><b>Indiquez le poids acheté et le poids d’un pochon (ou le nombre de pochons)</b><i>Exemple : 2,38 kg en pochons de 0,035 kg (35 g) → 68 pochons</i></div>';
-            note.textContent = ''; $('ipo-apply').disabled = true; return;
+    /* ───────── Panneau « Portion » réutilisable (Nouvel achat + fiche d'un achat existant) ─────────
+       c = { k: préfixe des id, toggle, qte, montant, unitVar, payVar, selFn, modal, linkedId(),
+             anchor(), apply(R, kgProd, p), applyLabel(p, kgProd, R) } */
+    function makePortion(c) {
+        var P = { on: false, R: null, origSel: null };
+        function I(s) { return $(c.k + '-' + s); }
+        function btn(u) { return document.querySelector('#' + c.toggle + ' [data-unit="' + u + '"]'); }
+        function linked() { return productById(c.linkedId()); }
+        function baseUnit() { var p = linked(); return p && p.unitType === 'kg' ? 'kg' : 'unit'; }
+        P.baseUnit = baseUnit;
+        P.build = function () {
+            if (I('box')) return true;
+            var tg = $(c.toggle), qte = $(c.qte); if (!tg || !qte) return false;
+            css();
+            var b = document.createElement('button'); b.type = 'button'; b.setAttribute('data-unit', 'portion');
+            b.title = 'Vente en portions / pochons : nombre de pochons, poids par pochon, prix coûtant et prix de vente';
+            b.style.cssText = 'padding:0 10px;border:none;background:var(--input-bg,#f5f5f5);color:#888;font-size:0.75rem;font-weight:700;cursor:pointer;border-left:1px solid var(--border-color,#e0e0e0);';
+            b.textContent = '⚖️ Portion';
+            b.addEventListener('click', function () { P.enter(); });
+            tg.appendChild(b);
+            tg.addEventListener('click', function (e) { var x = e.target.closest('button[data-unit]'); if (x && x.getAttribute('data-unit') !== 'portion') P.leave(); }, true);
+            var box = document.createElement('div'); box.id = c.k + '-box'; box.className = 'ipo-box';
+            box.innerHTML = '<div class="ph"><span>⚖️ Vente en portions / pochons</span><small>poids acheté + montant total → nombre de pochons, coût et recette</small></div>'
+                + '<div class="pg">'
+                + '<div><label for="' + c.k + '-w">Poids acheté (kg)</label><input id="' + c.k + '-w" type="text" inputmode="decimal" autocomplete="off" placeholder="ex. 2,38"><div class="hint" id="' + c.k + '-wh"></div></div>'
+                + '<div><label for="' + c.k + '-g">Poids d’un pochon (g ou kg)</label><input id="' + c.k + '-g" type="text" inputmode="decimal" autocomplete="off" placeholder="ex. 35 ou 0,035"><div class="hint" id="' + c.k + '-gh"></div>'
+                + '<div class="chips" id="' + c.k + '-gc">' + [25, 35, 50, 100, 125, 250, 500].map(function (g) { return '<button type="button" data-g="' + g + '">' + g + ' g</button>'; }).join('') + '</div></div>'
+                + '<div><label for="' + c.k + '-n">Nombre de pochons</label><input id="' + c.k + '-n" type="number" min="1" step="1" placeholder="ex. 68"></div>'
+                + '<div><label for="' + c.k + '-pv">Prix de vente / pochon (€)</label><input id="' + c.k + '-pv" type="text" inputmode="decimal" autocomplete="off" placeholder="ex. 1">'
+                + '<div class="chips" id="' + c.k + '-pc">' + [1, 2, 3, 5].map(function (v) { return '<button type="button" data-pv="' + v + '">' + v + ' €</button>'; }).join('') + '<button type="button" data-k="2" title="Deux fois le coût du pochon">×2 coût</button></div></div>'
+                + '</div>'
+                + '<div class="res" id="' + c.k + '-res"></div>'
+                + '<div class="note" id="' + c.k + '-note"></div>'
+                + '<div class="acts"><button type="button" id="' + c.k + '-apply" disabled>🏷️ Appliquer ce prix de vente au produit</button></div>';
+            var a = c.anchor();
+            if (a && a.parentNode) a.parentNode.insertBefore(box, a);
+            else { var pr = $(c.packRow); pr.parentNode.insertBefore(box, pr.nextSibling); }
+            I('w').addEventListener('input', function () { if (pG(I('g').value) > 0) fromG(); else if (num(I('n').value) > 0) fromN(); else P.calc(); });
+            I('g').addEventListener('input', fromG);
+            I('n').addEventListener('input', fromN);
+            I('pv').addEventListener('input', function () { lsSet(PV_KEY, I('pv').value); P.calc(); });
+            I('gc').addEventListener('click', function (e) { var x = e.target.closest('[data-g]'); if (!x) return; I('g').value = x.getAttribute('data-g'); fromG(); });
+            I('pc').addEventListener('click', function (e) {
+                var x = e.target.closest('button'); if (!x) return;
+                if (x.hasAttribute('data-k')) { if (!(P.R && P.R.cout > 0)) { toast('Saisissez d’abord le poids, les pochons et le montant total', 'info'); return; } I('pv').value = (Math.ceil(P.R.cout * +x.getAttribute('data-k') * 10) / 10).toFixed(2); }
+                else I('pv').value = (+x.getAttribute('data-pv')).toFixed(2);
+                lsSet(PV_KEY, I('pv').value); P.calc();
+            });
+            I('apply').addEventListener('click', function () { if (P.R && P.R.pv > 0 && linked()) c.apply(P.R, baseUnit() === 'kg', linked()); });
+            var m = $(c.montant); if (m) m.addEventListener('input', function () { if (P.on) P.calc(); });
+            var md = $(c.modal), tm = null;
+            if (md) ['change', 'click'].forEach(function (ev) { md.addEventListener(ev, function (e) { if (!P.on || (e.target && e.target.closest && e.target.closest('#' + c.k + '-box'))) return; clearTimeout(tm); tm = setTimeout(P.calc, 60); }); });
+            return true;
+        };
+        P.place = function () { var box = I('box'), a = c.anchor(); if (box && a && a.parentNode && box.nextSibling !== a) a.parentNode.insertBefore(box, a); };
+        function fromG() {
+            var w = wKg(I('w').value), g = pG(I('g').value);
+            if (g > 0) lsSet(G_KEY, I('g').value);
+            var n = nbPochons(w, g);
+            I('n').value = n > 0 ? n : '';
+            P.calc();
         }
-        var reste = Math.max(0, Math.round((Math.round(w * 1e6) - n * Math.round(g * 1000)) / 1000));
-        var cout = montant > 0 ? montant / n : 0, coutPoids = montant > 0 ? montant * g / (w * 1000) : 0, ca = pv * n, resu = ca - montant;
-        R = { w: w, g: g, n: n, pv: pv, montant: montant, cout: cout, ca: ca, resu: resu, reste: reste };
-        var h = '<div class="big"><small>Nombre de pochons</small><b>' + n + ' pochon' + (n > 1 ? 's' : '') + ' de ' + gTxt(g) + '</b><i>' + gTxt(w * 1000) + ' achetés' + (montant > 0 ? ' pour ' + eur(montant) : '') + (reste > 0 ? ' · reste ' + gTxt(reste) : ' · tout est utilisé') + '</i></div>';
-        h += '<div class="big"><small>Prix coûtant réel d’un pochon</small><b>' + (cout > 0 ? eur3(cout) + ' <span style="font-size:.8rem;font-weight:700;color:var(--gray,#7f8c8d)">≈ ' + eur(cout) + '</span>' : 'Saisissez le montant total de l’achat') + '</b><i>' + (cout > 0 ? eur(montant) + ' ÷ ' + n + ' pochons' + (reste > 0 ? ' (le reste de ' + gTxt(reste) + ' est inclus) · au poids seul : ' + eur3(coutPoids) : '') : '') + '</i></div>';
-        h += '<div><small>Prix au kg (achat)</small><b>' + (montant > 0 ? eur(montant / w) : '—') + '</b><i>' + (montant > 0 ? eur(montant) + ' ÷ ' + gTxt(w * 1000) : '') + '</i></div>';
-        h += '<div><small>Prix au kg (vente)</small><b>' + (pv > 0 ? eur(pv * 1000 / g) : '—') + '</b><i>' + (pv > 0 ? eur(pv) + ' les ' + gTxt(g) : 'saisissez le prix de vente') + '</i></div>';
-        if (pv > 0) {
-            h += '<div class="pos"><small>Recette si tout est vendu</small><b>' + eur(ca) + '</b><i>' + n + ' × ' + eur(pv) + '</i></div>';
-            if (montant > 0) {
-                h += '<div class="' + (resu >= 0 ? 'pos' : 'neg') + '"><small>' + (resu >= 0 ? 'Bénéfice' : 'Perte') + '</small><b>' + (resu >= 0 ? '+' : '−') + eur(Math.abs(resu)) + '</b><i>' + (ca > 0 ? 'marge ' + Math.round(resu / ca * 100) + ' % · coef ×' + (ca / montant).toFixed(2).replace('.', ',') : '') + '</i></div>';
-                h += '<div><small>Prix mini / pochon</small><b>' + eur(Math.ceil(cout * 100) / 100) + '</b><i>pour ne pas perdre</i></div>';
+        function fromN() {
+            var w = wKg(I('w').value), n = Math.floor(num(I('n').value));
+            I('g').value = (w > 0 && n > 0) ? String(Math.floor(w * 1e6 / n / 100) / 10).replace('.', ',') : '';
+            P.calc();
+        }
+        P.styleToggle = function () {
+            document.querySelectorAll('#' + c.toggle + ' button').forEach(function (b) {
+                var a = P.on ? b.getAttribute('data-unit') === 'portion' : b.getAttribute('data-unit') === (window[c.unitVar] || 'unit');
+                b.style.background = a ? (P.on ? '#16a085' : '#9b59b6') : 'var(--input-bg,#f5f5f5)';
+                b.style.color = a ? 'white' : '#888'; b.style.fontWeight = a ? '800' : '700';
+            });
+        };
+        P.calc = function () {
+            if (!P.on || !I('box')) return;
+            var w = wKg(I('w').value), g = pG(I('g').value), n = Math.floor(num(I('n').value)), pv = num(I('pv').value);
+            var gv = String(I('g').value || '').trim(), wv = String(I('w').value || '').trim();
+            I('gh').textContent = g > 0 && !/^\d+\s*g?$/i.test(gv) ? '= ' + gTxt(g) + ' par pochon' : '';
+            I('wh').textContent = w > 0 && wv ? '= ' + gTxt(w * 1000) : '';
+            var montant = window[c.payVar] === 'offert' ? 0 : num(($(c.montant) || {}).value);
+            var res = I('res'), note = I('note'), kgProd = baseUnit() === 'kg', p = linked();
+            document.querySelectorAll('#' + c.k + '-gc [data-g]').forEach(function (b) { b.classList.toggle('on', Math.abs(+b.getAttribute('data-g') - g) < 1e-6); });
+            document.querySelectorAll('#' + c.k + '-pc [data-pv]').forEach(function (b) { b.classList.toggle('on', Math.abs(+b.getAttribute('data-pv') - pv) < 0.001); });
+            if (window[c.unitVar] !== baseUnit()) window[c.unitVar] = baseUnit();
+            var q = $(c.qte);
+            if (q) { q.readOnly = true; q.style.opacity = '0.6'; q.step = kgProd ? '0.001' : '1'; q.value = kgProd ? (w > 0 ? w : '') : (n > 0 ? n : ''); }
+            if (c.after) try { c.after(); } catch (e) {}
+            P.styleToggle();
+            if (!(w > 0) || !(n > 0) || !(g > 0)) {
+                P.R = null;
+                res.innerHTML = '<div class="big"><small>Résultat</small><b>Indiquez le poids acheté et le poids d’un pochon (ou le nombre de pochons)</b><i>Exemple : 2,38 kg en pochons de 0,035 kg (35 g) → 68 pochons</i></div>';
+                note.textContent = ''; I('apply').disabled = true; return;
             }
-        }
-        res.innerHTML = h;
-        var msg = '', warn = false;
-        if (pv > 0 && montant > 0 && resu < 0) { msg = '⚠️ À ' + eur(pv) + ' le pochon, la vente ne couvre pas l’achat : il faut au moins ' + eur(Math.ceil(cout * 100) / 100) + ' par pochon.'; warn = true; }
-        else if (kgProd) msg = '⚖️ « ' + p.name + ' » est vendu au kg : le stock recevra ' + gTxt(w * 1000) + ' ; les pochons servent au calcul.';
-        else msg = '📦 L’achat sera enregistré en ' + n + ' pochon' + (n > 1 ? 's' : '') + ' (stock en unités)' + (p ? ' pour « ' + p.name + ' »' : '') + '.';
-        note.textContent = msg; note.className = 'note' + (warn ? ' warn' : '');
-        var ap = $('ipo-apply');
-        ap.disabled = !(pv > 0);
-        ap.textContent = p ? '🏷️ Appliquer ' + (kgProd ? eur(pv * 1000 / g) + '/kg' : eur(pv) + ' le pochon') + ' comme prix de vente de « ' + p.name + ' »' : '🏷️ Associez ou créez le produit pour lui appliquer ce prix';
-        if (!p) ap.disabled = true;
-    }
-    function applyPrice() {
-        if (!R || !(R.pv > 0)) return;
-        var p = linked(); if (!p) return;
-        var cb = $('ivm-pv-on'), nv = $('ivm-pv-new'); if (!cb || !nv) return;
-        nv.value = (baseUnit() === 'kg' ? R.pv * 1000 / R.g : R.pv).toFixed(2);
-        if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
-        nv.dispatchEvent(new Event('input', { bubbles: true }));
-        toast('🏷️ Le prix de vente sera mis à jour à l’enregistrement de l’achat');
-    }
-    function enter() {
-        if (!build()) return;
-        var wasKg = window._invMSelectedUnit === 'kg', q = num(($('inv-m-qte') || {}).value);
-        var ub = btn(baseUnit());
-        if (ub && origSel) origSel.call(window, ub);       // remet l'état normal (masque le pack…)
-        on = true;
-        $('ipo').classList.add('on');
-        if (!$('ipo-w').value && wasKg && q > 0) $('ipo-w').value = q;
-        if (!$('ipo-g').value && !$('ipo-n').value) $('ipo-g').value = lsGet(G_KEY) || '250';
-        if (!$('ipo-pv').value && lsGet(PV_KEY)) $('ipo-pv').value = lsGet(PV_KEY);
-        if (pG($('ipo-g').value) > 0) fromG(); else fromN();
-        setTimeout(function () { var w = $('ipo-w'); if (w && !w.value) w.focus(); }, 40);
-    }
-    function leave() {
-        if (!on) return;
-        on = false; R = null;
-        var box = $('ipo'); if (box) box.classList.remove('on');
-        var q = $('inv-m-qte'); if (q) { q.readOnly = false; q.style.opacity = '1'; q.value = ''; }
-    }
-    function reset() {
-        on = false; R = null;
-        var box = $('ipo'); if (box) box.classList.remove('on');
-        ['ipo-w', 'ipo-g', 'ipo-n', 'ipo-pv'].forEach(function (id) { if ($(id)) $(id).value = ''; });
+            var reste = Math.max(0, Math.round((Math.round(w * 1e6) - n * Math.round(g * 1000)) / 1000));
+            var cout = montant > 0 ? montant / n : 0, coutPoids = montant > 0 ? montant * g / (w * 1000) : 0, ca = pv * n, resu = ca - montant;
+            P.R = { w: w, g: g, n: n, pv: pv, montant: montant, cout: cout, ca: ca, resu: resu, reste: reste };
+            var h = '<div class="big"><small>Nombre de pochons</small><b>' + n + ' pochon' + (n > 1 ? 's' : '') + ' de ' + gTxt(g) + '</b><i>' + gTxt(w * 1000) + ' achetés' + (montant > 0 ? ' pour ' + eur(montant) : '') + (reste > 0 ? ' · reste ' + gTxt(reste) : ' · tout est utilisé') + '</i></div>';
+            h += '<div class="big"><small>Prix coûtant réel d’un pochon</small><b>' + (cout > 0 ? eur3(cout) + ' <span style="font-size:.8rem;font-weight:700;color:var(--gray,#7f8c8d)">≈ ' + eur(cout) + '</span>' : 'Saisissez le montant total de l’achat') + '</b><i>' + (cout > 0 ? eur(montant) + ' ÷ ' + n + ' pochons' + (reste > 0 ? ' (le reste de ' + gTxt(reste) + ' est inclus) · au poids seul : ' + eur3(coutPoids) : '') : '') + '</i></div>';
+            h += '<div><small>Prix au kg (achat)</small><b>' + (montant > 0 ? eur(montant / w) : '—') + '</b><i>' + (montant > 0 ? eur(montant) + ' ÷ ' + gTxt(w * 1000) : '') + '</i></div>';
+            h += '<div><small>Prix au kg (vente)</small><b>' + (pv > 0 ? eur(pv * 1000 / g) : '—') + '</b><i>' + (pv > 0 ? eur(pv) + ' les ' + gTxt(g) : 'saisissez le prix de vente') + '</i></div>';
+            if (pv > 0) {
+                h += '<div class="pos"><small>Recette si tout est vendu</small><b>' + eur(ca) + '</b><i>' + n + ' × ' + eur(pv) + '</i></div>';
+                if (montant > 0) {
+                    h += '<div class="' + (resu >= 0 ? 'pos' : 'neg') + '"><small>' + (resu >= 0 ? 'Bénéfice' : 'Perte') + '</small><b>' + (resu >= 0 ? '+' : '−') + eur(Math.abs(resu)) + '</b><i>' + (ca > 0 ? 'marge ' + Math.round(resu / ca * 100) + ' % · coef ×' + (ca / montant).toFixed(2).replace('.', ',') : '') + '</i></div>';
+                    h += '<div><small>Prix mini / pochon</small><b>' + eur(Math.ceil(cout * 100) / 100) + '</b><i>pour ne pas perdre</i></div>';
+                }
+            }
+            res.innerHTML = h;
+            var msg = '', warn = false;
+            if (pv > 0 && montant > 0 && resu < 0) { msg = '⚠️ À ' + eur(pv) + ' le pochon, la vente ne couvre pas l’achat : il faut au moins ' + eur(Math.ceil(cout * 100) / 100) + ' par pochon.'; warn = true; }
+            else if (kgProd) msg = '⚖️ « ' + p.name + ' » est vendu au kg : le stock compte ' + gTxt(w * 1000) + ' ; les pochons servent au calcul.';
+            else msg = '📦 L’achat est compté en ' + n + ' pochon' + (n > 1 ? 's' : '') + ' (stock en unités)' + (p ? ' pour « ' + p.name + ' »' : '') + '.';
+            note.textContent = msg; note.className = 'note' + (warn ? ' warn' : '');
+            var ap = I('apply');
+            ap.disabled = !(pv > 0) || !p;
+            ap.textContent = !p ? '🏷️ Associez ou créez le produit pour lui appliquer ce prix' : !(pv > 0) ? '🏷️ Saisissez le prix de vente d’un pochon pour l’appliquer à « ' + p.name + ' »' : '🏷️ Appliquer ' + (kgProd ? eur(pv * 1000 / g) + '/kg' : eur(pv) + ' le pochon') + ' comme prix de vente de « ' + p.name + ' »';
+        };
+        /* snap : détail enregistré dans un achat (pour rouvrir le panneau tel quel) */
+        P.enter = function (snap) {
+            if (!P.build()) return;
+            var wasKg = window[c.unitVar] === 'kg', q = num(($(c.qte) || {}).value);
+            var ub = btn(baseUnit());
+            if (ub && P.origSel) P.origSel.call(window, ub);
+            P.on = true;
+            I('box').classList.add('on');
+            if (snap) {
+                I('w').value = String(snap.poidsKg).replace('.', ',');
+                I('g').value = String(snap.grammes).replace('.', ',');
+                I('n').value = snap.nb || '';
+                I('pv').value = snap.prixVente ? String(snap.prixVente).replace('.', ',') : '';
+                P.calc();
+                return;
+            }
+            if (!I('w').value && wasKg && q > 0) I('w').value = String(q).replace('.', ',');
+            if (!I('g').value && !I('n').value) I('g').value = lsGet(G_KEY) || '250';
+            if (!I('pv').value && lsGet(PV_KEY)) I('pv').value = lsGet(PV_KEY);
+            if (pG(I('g').value) > 0) fromG(); else fromN();
+            setTimeout(function () { var w = I('w'); if (w && !w.value) w.focus(); }, 40);
+        };
+        P.leave = function () {
+            if (!P.on) return;
+            P.on = false; P.R = null;
+            var box = I('box'); if (box) box.classList.remove('on');
+            var q = $(c.qte); if (q) { q.readOnly = false; q.style.opacity = '1'; }
+        };
+        P.reset = function () {
+            P.on = false; P.R = null;
+            var box = I('box'); if (box) box.classList.remove('on');
+            ['w', 'g', 'n', 'pv'].forEach(function (s) { if (I(s)) I(s).value = ''; });
+            var q = $(c.qte); if (q) { q.readOnly = false; q.style.opacity = '1'; }
+        };
+        P.snapshot = function () {
+            var R = P.R; if (!R) return null;
+            return { poidsKg: R.w, grammes: R.g, nb: R.n, prixVente: R.pv || null, recette: R.pv ? Math.round(R.ca * 100) / 100 : null, coutPochon: R.cout ? Math.round(R.cout * 1000) / 1000 : null, resteG: R.reste, stockEn: baseUnit() === 'kg' ? 'kg' : 'pochons' };
+        };
+        /* appels automatiques de la sélection d'unité : en mode portion on garde le panneau */
+        P.hookSelect = function () {
+            P.origSel = window[c.selFn];
+            window[c.selFn] = function () { if (P.on) { P.calc(); return; } return P.origSel.apply(this, arguments); };
+        };
+        return P;
     }
 
-    var origSel = null;
+    /* ═════════════ 1) NOUVEL ACHAT ═════════════ */
+    var NA = makePortion({
+        k: 'ipo', toggle: 'inv-m-unit-toggle', qte: 'inv-m-qte', montant: 'inv-m-montant', packRow: 'inv-m-pack-row',
+        unitVar: '_invMSelectedUnit', payVar: '_invMSelectedPay', selFn: 'invMSelectUnit', modal: 'inv-add-modal',
+        linkedId: function () { return window._invMLinkedProductId; },
+        anchor: function () { return $('ivm-pv'); },
+        after: function () { if (typeof window.invMCalcUnit === 'function') window.invMCalcUnit(); },
+        apply: function (R, kgProd) {
+            var cb = $('ivm-pv-on'), nv = $('ivm-pv-new'); if (!cb || !nv) return;
+            nv.value = (kgProd ? R.pv * 1000 / R.g : R.pv).toFixed(2);
+            if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); }
+            nv.dispatchEvent(new Event('input', { bubbles: true }));
+            toast('🏷️ Le prix de vente sera mis à jour à l’enregistrement de l’achat');
+        }
+    });
+
+    /* ═════════════ 2) FICHE D'UN ACHAT EXISTANT ═════════════ */
+    function editId() { return ($('inv-edit-id') || {}).value || ''; }
+    function editEntry() { var id = editId(); try { return (JSON.parse(localStorage.getItem('covo_approvisionnements')) || []).find(function (x) { return x.id === id; }) || null; } catch (e) { return null; } }
+    var ED = makePortion({
+        k: 'ipx', toggle: 'inv-edit-unit-toggle', qte: 'inv-edit-qte', montant: 'inv-edit-montant', packRow: 'inv-edit-pack-row',
+        unitVar: '_invEditSelectedUnit', payVar: '_invEditSelectedPay', selFn: 'invEditSelectUnit', modal: 'inv-edit-modal',
+        linkedId: function () { var e = editEntry(); return e ? e.produitId : null; },
+        anchor: function () { return $('ive-pu'); },
+        after: function () { if (typeof invEditRecalcReste === 'function') invEditRecalcReste(); },
+        apply: function (R, kgProd, p) {
+            if (typeof window.ipeOpen === 'function') window.ipeOpen(p.id, { price: kgProd ? R.pv * 1000 / R.g : R.pv, from: 'portion' });
+        }
+    });
+
+    /* Mise à jour du produit lié lors de la modification d'un achat (stock + prix d'achat) */
+    function stockQty(e, p) {
+        if (!e || !p || !(+e.qte > 0)) return 0;
+        var kgE = e.unitType === 'kg', kgP = p.unitType === 'kg';
+        return kgE === kgP ? +e.qte : null;               // null = unités incompatibles (kg ↔ unités)
+    }
+    function isLatest(e) {
+        try {
+            var L = (JSON.parse(localStorage.getItem('covo_approvisionnements')) || []).filter(function (x) { return String(x.produitId) === String(e.produitId) && x.paiement !== 'offert'; });
+            L.sort(function (a, b) { return String(b.date + (b.datetime || '')).localeCompare(String(a.date + (a.datetime || ''))); });
+            return !L.length || L[0].id === e.id;
+        } catch (er) { return true; }
+    }
+    function syncPreview() {
+        var box = $('ipx-sync'); if (!box) return;
+        var e = editEntry(), p = e ? productById(e.produitId) : null;
+        box.style.display = p ? '' : 'none';
+        if (!p) return;
+        var on = $('ipx-sync-on').checked, kgP = p.unitType === 'kg', d = box.querySelector('.d');
+        var nq = num(($('inv-edit-qte') || {}).value), nu = window._invEditSelectedUnit || 'unit';
+        var oldQ = stockQty(e, p), newQ = stockQty({ qte: nq, unitType: nu }, p);
+        var m = window._invEditSelectedPay === 'offert' ? 0 : num(($('inv-edit-montant') || {}).value), pu = nq > 0 && m > 0 ? m / nq : 0;
+        var lines = [], warn = false, st = +p.stock || 0, U = kgP ? ' kg' : ' u.';
+        if (oldQ === null || newQ === null) { lines.push('⚠️ L’unité de l’achat (' + (nu === 'kg' ? 'kg' : 'unités') + ') ne correspond pas à celle du produit (' + (kgP ? 'kg' : 'unités') + ') : le stock ne sera pas modifié.'); warn = true; }
+        else {
+            var delta = Math.round((newQ - oldQ) * 1000) / 1000;
+            lines.push(Math.abs(delta) > 0.0005 ? '📦 Stock « ' + esc(p.name) + ' » : ' + (+st.toFixed(3)) + U + ' → <b>' + (+(st + delta).toFixed(3)) + U + '</b> (' + (delta > 0 ? '+' : '') + delta + U + ')' : '📦 Quantité inchangée : le stock reste à ' + (+st.toFixed(3)) + U + '.');
+        }
+        if (pu > 0 && e.paiement !== 'offert' && window._invEditSelectedPay !== 'offert') {
+            if (isLatest(e)) lines.push('💶 Prix d’achat du produit : ' + (p.costPrice != null && p.costPrice !== '' ? eur(+p.costPrice) : '—') + ' → <b>' + (pu < 1 ? eur3(pu) : eur(pu)) + '</b>' + U.replace(' u.', '/u.').replace(' kg', '/kg'));
+            else lines.push('💶 Prix d’achat du produit inchangé (un achat plus récent fixe déjà son prix).');
+        }
+        d.innerHTML = on ? lines.join('<br>') : 'Le produit lié ne sera pas modifié.';
+        d.className = 'd' + (warn && on ? ' warn' : '');
+    }
+    window._ipxSyncOn = function () { var c = $('ipx-sync-on'); return !!(c && c.checked && $('ipx-sync').style.display !== 'none'); };
+    function buildSync() {
+        if ($('ipx-sync')) return;
+        var a = $('ive-pu'); if (!a) return;
+        var box = document.createElement('div'); box.id = 'ipx-sync';
+        box.innerHTML = '<label><input type="checkbox" id="ipx-sync-on" checked> 🔄 Mettre à jour le produit lié (stock et prix d’achat) à l’enregistrement</label><div class="d"></div>';
+        a.parentNode.insertBefore(box, a.nextSibling);
+        var md = $('inv-edit-modal'), t = null;
+        ['input', 'change', 'click'].forEach(function (ev) { md.addEventListener(ev, function () { clearTimeout(t); t = setTimeout(syncPreview, 70); }); });
+    }
+    function applySync(before, after) {
+        var p = productById(after.produitId); if (!p) return '';
+        var oldQ = stockQty(before, p), newQ = stockQty(after, p), msg = [];
+        var cost = (after.paiement !== 'offert' && after.prixUnit > 0 && isLatest(after)) ? after.prixUnit : null;
+        if (oldQ === null || newQ === null) { if (cost != null) setCost(p.id, cost, after); return 'unités différentes : stock non modifié'; }
+        var delta = Math.round((newQ - oldQ) * 1000) / 1000;
+        if (Math.abs(delta) > 0.0005 && typeof window._invApplyStockIn === 'function') {
+            window._invApplyStockIn(p.id, delta, p.unitType === 'kg' ? 'kg' : 'unit', after.numero, 'Modification de l’achat : ' + (+oldQ) + ' → ' + (+newQ), cost);
+            msg.push('stock ' + (delta > 0 ? '+' : '') + delta + (p.unitType === 'kg' ? ' kg' : ' u.'));
+        } else if (cost != null) setCost(p.id, cost, after);
+        if (cost != null && Math.abs((+p.costPrice || 0) - cost) > 0.0004) msg.push('prix d’achat ' + (cost < 1 ? eur3(cost) : eur(cost)));
+        return msg.join(' · ');
+    }
+    function setCost(pid, cost, e) {
+        try {
+            var L = JSON.parse(localStorage.getItem('covo_products')) || [], i = L.findIndex(function (x) { return String(x.id) === String(pid); });
+            if (i < 0 || Math.abs((+L[i].costPrice || 0) - cost) < 0.0004) return;
+            var old = L[i].costPrice;
+            L[i].costPrice = cost;
+            if (!Array.isArray(L[i].stockHistory)) L[i].stockHistory = [];
+            L[i].stockHistory.push({ date: new Date().toISOString(), type: 'info', before: null, after: null, delta: 0, reason: 'Prix d’achat ' + (old != null ? (+old).toFixed(3) : '—') + ' € → ' + cost.toFixed(3) + ' € (modification achat #' + e.numero + ')', user: 'Approvisionnement Pro', meta: { source: 'investissement_pro', field: 'costPrice', old: old, new: cost } });
+            localStorage.setItem('covo_products', JSON.stringify(L));
+            if (typeof cpDriveMarkDirty === 'function') cpDriveMarkDirty();
+        } catch (er) {}
+    }
+
     function boot() {
-        if (!$('inv-add-modal') || typeof window.invMSelectUnit !== 'function' || typeof window.invOpenAddModal !== 'function' || typeof window.invModalSubmit !== 'function') {
+        if (!$('inv-add-modal') || !$('inv-edit-modal') || typeof window.invMSelectUnit !== 'function' || typeof window.invOpenAddModal !== 'function' || typeof window.invModalSubmit !== 'function' || typeof window.invOpenEdit !== 'function' || typeof window.invSaveEdit !== 'function' || typeof window.invEditSelectUnit !== 'function') {
             if ((boot.n = (boot.n || 0) + 1) < 200) setTimeout(boot, 300); return;
         }
-        origSel = window.invMSelectUnit;
-        // appels automatiques (ex. produit au kg associé) : en mode portion on garde le panneau et on recalcule
-        window.invMSelectUnit = function (b) {
-            if (on) { calc(); return; }
-            return origSel.apply(this, arguments);
-        };
+        /* ── Nouvel achat ── */
+        NA.hookSelect();
         var open = window.invOpenAddModal;
         window.invOpenAddModal = function () {
-            reset();
+            NA.reset();
             var r = open.apply(this, arguments);
-            try { build(); place(); styleToggle(); } catch (e) {}
+            try { NA.build(); NA.place(); NA.styleToggle(); } catch (e) {}
             return r;
         };
         var submit = window.invModalSubmit;
         window.invModalSubmit = function () {
             var snap = null, before = 0;
-            if (on) {
-                calc();
-                if (!R) { toast('Portion : indiquez le poids acheté et les grammes (ou le nombre) de pochons', 'info'); return; }
-                snap = { poidsKg: R.w, grammes: R.g, nb: R.n, prixVente: R.pv || null, recette: R.pv ? Math.round(R.ca * 100) / 100 : null, coutPochon: R.cout ? Math.round(R.cout * 1000) / 1000 : null, resteG: R.reste, stockEn: baseUnit() === 'kg' ? 'kg' : 'pochons' };
+            if (NA.on) {
+                NA.calc();
+                if (!NA.R) { toast('Portion : indiquez le poids acheté et le poids (ou le nombre) de pochons', 'info'); return; }
+                snap = NA.snapshot();
                 try { before = (JSON.parse(localStorage.getItem('covo_approvisionnements')) || []).length; } catch (e) {}
             }
             var r = submit.apply(this, arguments);
@@ -7696,6 +7807,12 @@ window.cpMaybeShowInstallBanner = function(){
                     var list = JSON.parse(localStorage.getItem('covo_approvisionnements')) || [];
                     if (list.length > before && list[0] && !list[0].portion) {
                         list[0].portion = snap;
+                        // prix coûtant réel au millième (ex. 0,485 € le pochon) au lieu de l'arrondi au centime
+                        var e0 = list[0];
+                        if (e0.paiement !== 'offert' && +e0.qte > 0 && +e0.montant > 0) {
+                            e0.prixUnit = Math.round(e0.montant / e0.qte * 1000) / 1000;
+                            if (e0.produitId != null) setCost(e0.produitId, e0.prixUnit, e0);
+                        }
                         if (typeof invSave === 'function') invSave(list); else localStorage.setItem('covo_approvisionnements', JSON.stringify(list));
                         if (typeof invRender === 'function') invRender();
                     }
@@ -7703,16 +7820,15 @@ window.cpMaybeShowInstallBanner = function(){
             }
             return r;
         };
-        // création d'un produit pendant le mode portion : produit à l'unité, prix du pochon, nom « … 250 g »
         var openNP = window.invOpenNewProductModal;
         if (typeof openNP === 'function') window.invOpenNewProductModal = function () {
             var r = openNP.apply(this, arguments);
             try {
-                if (on && R) {
+                if (NA.on && NA.R) {
                     var u = $('inv-np-unit'), pr = $('inv-np-price'), nm = $('inv-np-name');
                     if (u) u.value = 'unit';
-                    if (pr && R.pv > 0) pr.value = R.pv.toFixed(2);
-                    var lbl = gTxt(R.g);
+                    if (pr && NA.R.pv > 0) pr.value = NA.R.pv.toFixed(2);
+                    var lbl = gTxt(NA.R.g);
                     if (nm && nm.value.trim() && nm.value.indexOf(lbl) < 0) nm.value = nm.value.trim() + ' ' + lbl;
                 }
             } catch (e) {}
@@ -7720,17 +7836,60 @@ window.cpMaybeShowInstallBanner = function(){
         };
         var createNP = window.invCreateProductFromPurchase;
         if (typeof createNP === 'function') window.invCreateProductFromPurchase = function () {
-            if (on) {
-                // le produit créé détermine l'unité enregistrée : on prépare la quantité avant un éventuel enregistrement automatique
+            if (NA.on) {
                 var u = ($('inv-np-unit') || {}).value === 'kg' ? 'kg' : 'unit', q = $('inv-m-qte');
                 window._invMSelectedUnit = u;
-                if (q && R) q.value = u === 'kg' ? R.w : R.n;
+                if (q && NA.R) q.value = u === 'kg' ? NA.R.w : NA.R.n;
             }
             var r = createNP.apply(this, arguments);
-            try { if (on && $('inv-add-modal') && $('inv-add-modal').style.display !== 'none') calc(); } catch (e) {}
+            try { if (NA.on && $('inv-add-modal') && $('inv-add-modal').style.display !== 'none') NA.calc(); } catch (e) {}
             return r;
         };
-        // affichage dans la liste des achats
+        /* ── Fiche d'un achat existant ── */
+        ED.hookSelect();
+        var openE = window.invOpenEdit;
+        window.invOpenEdit = function (id) {
+            ED.reset();
+            var r = openE.apply(this, arguments);
+            try {
+                ED.build(); ED.place(); buildSync();
+                var c = $('ipx-sync-on'); if (c) c.checked = true;
+                var e = editEntry();
+                if (e && e.portion && e.portion.poidsKg > 0) ED.enter(e.portion); else ED.styleToggle();
+                syncPreview();
+                if (typeof window._iveRecap === 'function') window._iveRecap();
+            } catch (er) { console.warn(er); }
+            return r;
+        };
+        var saveE = window.invSaveEdit;
+        window.invSaveEdit = function () {
+            var before = editEntry(), snap = null, wasPortion = ED.on, sync = window._ipxSyncOn();
+            if (ED.on) {
+                ED.calc();
+                if (!ED.R) { toast('Portion : indiquez le poids acheté et le poids (ou le nombre) de pochons', 'info'); return; }
+                snap = ED.snapshot();
+            }
+            var r = saveE.apply(this, arguments);
+            var md = $('inv-edit-modal');
+            if (!before || !md || md.style.display !== 'none') return r;     // enregistrement refusé
+            try {
+                var list = JSON.parse(localStorage.getItem('covo_approvisionnements')) || [], i = list.findIndex(function (x) { return x.id === before.id; });
+                if (i < 0) return r;
+                var after = list[i], changed = false;
+                if (snap) {
+                    after.portion = snap; changed = true;
+                    if (after.paiement !== 'offert' && +after.qte > 0 && +after.montant > 0) after.prixUnit = Math.round(after.montant / after.qte * 1000) / 1000;
+                }
+                else if (!wasPortion && after.portion) { delete after.portion; changed = true; }
+                if (changed) { list[i] = after; if (typeof invSave === 'function') invSave(list); else localStorage.setItem('covo_approvisionnements', JSON.stringify(list)); }
+                var info = '';
+                if (sync && after.produitId != null) info = applySync(before, after);
+                if (changed || info) { if (typeof invRender === 'function') invRender(); }
+                if (info) toast('🔄 Produit lié mis à jour : ' + info);
+            } catch (er) { console.warn(er); }
+            return r;
+        };
+        /* ── Liste des achats ── */
         var origRender = window.invRender;
         if (typeof origRender === 'function') {
             var wrapR = function () {
@@ -7741,7 +7900,7 @@ window.cpMaybeShowInstallBanner = function(){
             window.invRender = wrapR;
             try { invRender = wrapR; } catch (e) {}
         }
-        build();
+        NA.build();
     }
     function tagList() {
         var listEl = $('inv-list'); if (!listEl) return;
@@ -7757,6 +7916,297 @@ window.cpMaybeShowInstallBanner = function(){
             s.textContent = '⚖️ ' + p.nb + ' pochon' + (p.nb > 1 ? 's' : '') + ' de ' + gTxt(p.grammes) + (p.prixVente ? ' · ' + eur(p.prixVente) + ' pièce → ' + eur(p.recette) : '');
             var l2 = row.querySelector('.ivp-l2'); (l2 || row).appendChild(s);
         });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   APPROVISIONNEMENT PRO — MODIFIER UN PRODUIT DU CATALOGUE
+   • Bouton « ✏️ Modifier la fiche » sous le produit associé (Nouvel achat)
+   • Bouton « ✏️ Modifier la fiche produit » dans la fiche d'un achat existant
+   • Bouton « 🏷️ Produits » dans la barre d'outils : recherche + modification
+   Champs : nom, catégorie, vente à l'unité / au kg, prix de vente, prix d'achat,
+   stock (correction tracée dans l'historique), code-barres (anti-doublon), TVA.
+   Données : covo_products (partagé avec COVO Pro et les satellites).
+   ════════════════════════════════════════════════════════════════════════ */
+(function () {
+    'use strict';
+    if (window._ipeInstalled) return;
+    window._ipeInstalled = true;
+    function $(id) { return document.getElementById(id); }
+    function num(v) { var n = parseFloat(String(v == null ? '' : v).replace(',', '.').replace(/\s/g, '')); return isFinite(n) ? n : NaN; }
+    function esc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, function (ch) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]; }); }
+    function eur(n) { return (+n).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: n > 0 && n < 1 ? 3 : 2 }) + ' €'; }
+    function fr(n) { return n == null || n === '' || isNaN(n) ? '' : String(+(+n).toFixed(3)).replace('.', ','); }
+    function toast(m, t) { if (typeof showScanToast === 'function') showScanToast(m, t || 'success'); }
+    function load() { try { return JSON.parse(localStorage.getItem('covo_products')) || []; } catch (e) { return []; } }
+    function user() { try { if (typeof currentUser !== 'undefined' && currentUser) return currentUser.name || currentUser.username || 'Approvisionnement Pro'; } catch (e) {} return 'Approvisionnement Pro'; }
+    var CUR = null;
+
+    var CSS = [
+        '#ipe-modal{display:none;position:fixed;inset:0;background:rgba(15,23,42,.62);backdrop-filter:blur(6px);z-index:20900;justify-content:center;align-items:center;padding:14px;}',
+        '#ipe-modal.open{display:flex;}',
+        '#ipe-modal .bx{background:var(--bg-card,#fff);color:var(--text-main,#1f2937);border-radius:18px;width:100%;max-width:640px;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.4);}',
+        '#ipe-modal .hd{background:linear-gradient(120deg,#0e6655,#16a085);color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px;}',
+        '#ipe-modal .hd b{font-size:1rem;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+        '#ipe-modal .hd small{display:block;font-size:.7rem;opacity:.85;font-weight:600;}',
+        '#ipe-modal .hd button{background:rgba(255,255,255,.2);border:none;color:#fff;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:1rem;flex-shrink:0;}',
+        '#ipe-modal .bd{padding:16px 18px;overflow-y:auto;display:flex;flex-direction:column;gap:11px;}',
+        '#ipe-modal .g2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}',
+        '#ipe-modal label{display:block;font-size:.66rem;font-weight:800;color:var(--gray,#64748b);text-transform:uppercase;margin-bottom:4px;}',
+        '#ipe-modal input,#ipe-modal select{width:100%;padding:10px 11px;border:1.5px solid var(--border-color,#e2e8f0);border-radius:9px;font-size:.9rem;box-sizing:border-box;background:var(--input-bg,#fff);color:var(--text-main,#1f2937);font-family:inherit;}',
+        '#ipe-modal input:focus,#ipe-modal select:focus{border-color:#16a085;outline:none;box-shadow:0 0 0 3px rgba(22,160,133,.15);}',
+        '#ipe-modal .seg{display:flex;border:1.5px solid var(--border-color,#e2e8f0);border-radius:9px;overflow:hidden;}',
+        '#ipe-modal .seg button{flex:1;border:none;background:var(--input-bg,#f8fafc);color:#64748b;font-weight:800;font-size:.8rem;padding:10px 8px;cursor:pointer;}',
+        '#ipe-modal .seg button.on{background:#16a085;color:#fff;}',
+        '#ipe-modal .info{font-size:.74rem;font-weight:700;color:var(--gray,#64748b);line-height:1.45;}',
+        '#ipe-modal .info.warn{color:#b45309;} #ipe-modal .info.bad{color:#dc2626;}',
+        '#ipe-modal .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;}',
+        '#ipe-modal .kpi div{border:1px solid var(--border-color,#e5e7eb);border-radius:10px;padding:7px 9px;background:rgba(22,160,133,.05);}',
+        '#ipe-modal .kpi small{display:block;font-size:.6rem;font-weight:800;color:var(--gray,#64748b);text-transform:uppercase;}',
+        '#ipe-modal .kpi b{font-size:.95rem;}',
+        '#ipe-modal .ft{display:flex;gap:8px;padding:12px 18px;border-top:1px solid var(--border-color,#e5e7eb);background:var(--bg-card,#fff);}',
+        '#ipe-modal .ft button{border:none;border-radius:10px;padding:11px 14px;font-weight:800;font-size:.86rem;cursor:pointer;}',
+        '#ipe-modal .ft .cancel{background:var(--input-bg,#f1f5f9);color:var(--text-main,#334155);}',
+        '#ipe-modal .ft .save{flex:1;background:linear-gradient(135deg,#16a085,#0e6655);color:#fff;}',
+        '#ipe-modal .ft .back{background:none;color:#0e7c66;}',
+        '#ipe-list{display:flex;flex-direction:column;gap:6px;}',
+        '#ipe-list button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:1.5px solid var(--border-color,#e5e7eb);background:var(--bg-card,#fff);color:var(--text-main,#1f2937);border-radius:10px;padding:9px 11px;cursor:pointer;font-family:inherit;}',
+        '#ipe-list button:hover{border-color:#16a085;background:rgba(22,160,133,.05);}',
+        '#ipe-list .n{flex:1;min-width:0;font-weight:800;font-size:.86rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+        '#ipe-list .n small{display:block;font-weight:600;font-size:.7rem;color:var(--gray,#64748b);}',
+        '#ipe-list .p{font-weight:800;font-size:.82rem;color:#0e7c66;white-space:nowrap;}',
+        '.ipe-edit-btn{border:1.5px solid rgba(22,160,133,.5);background:rgba(22,160,133,.08);color:#0e7c66;border-radius:8px;padding:6px 10px;font-weight:800;font-size:.76rem;cursor:pointer;margin-top:6px;font-family:inherit;}',
+        '.ipe-edit-btn:hover{background:#16a085;color:#fff;}',
+        '@media (max-width:520px){#ipe-modal .g2{grid-template-columns:1fr;}#ipe-modal .kpi{grid-template-columns:1fr 1fr;}}'
+    ].join('\n');
+
+    function build() {
+        if ($('ipe-modal')) return;
+        var st = document.createElement('style'); st.id = 'ipe-css'; st.textContent = CSS; document.head.appendChild(st);
+        var m = document.createElement('div'); m.id = 'ipe-modal'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true');
+        m.innerHTML = '<div class="bx"><div class="hd"><span style="font-size:1.3rem;">🏷️</span><b id="ipe-title">Modifier le produit<small id="ipe-sub"></small></b><button type="button" id="ipe-x" aria-label="Fermer">✕</button></div>'
+            + '<div class="bd" id="ipe-pick" style="display:none;"><input id="ipe-q" type="search" placeholder="🔍 Rechercher un produit (nom, code-barres, catégorie)…" autocomplete="off"><div id="ipe-list"></div></div>'
+            + '<div class="bd" id="ipe-form">'
+            + '<div><label for="ipe-name">Nom du produit *</label><input id="ipe-name" maxlength="120"></div>'
+            + '<div class="g2"><div><label for="ipe-cat">Catégorie</label><select id="ipe-cat"></select></div>'
+            + '<div><label>Vendu</label><div class="seg" id="ipe-unit"><button type="button" data-u="unit">🔢 À l’unité</button><button type="button" data-u="kg">⚖️ Au kg</button></div></div></div>'
+            + '<div class="g2"><div><label for="ipe-price" id="ipe-price-l">Prix de vente (€)</label><input id="ipe-price" inputmode="decimal" autocomplete="off"></div>'
+            + '<div><label for="ipe-cost" id="ipe-cost-l">Prix d’achat (€)</label><input id="ipe-cost" inputmode="decimal" autocomplete="off" placeholder="—"></div></div>'
+            + '<div class="g2"><div><label for="ipe-stock" id="ipe-stock-l">Stock</label><input id="ipe-stock" inputmode="decimal" autocomplete="off"></div>'
+            + '<div><label for="ipe-tva">TVA (%)</label><input id="ipe-tva" inputmode="decimal" autocomplete="off" placeholder="ex. 5,5"></div></div>'
+            + '<div><label for="ipe-bc">Code-barres</label><input id="ipe-bc" autocomplete="off" placeholder="facultatif"></div>'
+            + '<div class="kpi" id="ipe-kpi"></div>'
+            + '<div class="info" id="ipe-info"></div>'
+            + '</div>'
+            + '<div class="ft"><button type="button" class="back" id="ipe-back" style="display:none;">← Liste</button><button type="button" class="cancel" id="ipe-cancel">Annuler</button><button type="button" class="save" id="ipe-save">✅ Enregistrer le produit</button></div></div>';
+        document.body.appendChild(m);
+        $('ipe-x').onclick = $('ipe-cancel').onclick = close;
+        m.addEventListener('mousedown', function (e) { if (e.target === m) close(); });
+        $('ipe-save').onclick = save;
+        $('ipe-back').onclick = function () { pick(); };
+        $('ipe-unit').addEventListener('click', function (e) { var b = e.target.closest('[data-u]'); if (!b) return; setUnit(b.getAttribute('data-u')); preview(); });
+        ['ipe-price', 'ipe-cost', 'ipe-stock', 'ipe-bc', 'ipe-name'].forEach(function (id) { $(id).addEventListener('input', preview); });
+        $('ipe-q').addEventListener('input', renderList);
+        $('ipe-list').addEventListener('click', function (e) { var b = e.target.closest('[data-id]'); if (b) edit(b.getAttribute('data-id')); });
+        document.addEventListener('keydown', function (e) {
+            if (!m.classList.contains('open')) return;
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+            else if (e.key === 'Enter' && $('ipe-form').style.display !== 'none' && !e.shiftKey && e.target.tagName !== 'BUTTON') { e.preventDefault(); e.stopPropagation(); save(); }
+        }, true);
+    }
+    function unit() { var b = document.querySelector('#ipe-unit .on'); return b ? b.getAttribute('data-u') : 'unit'; }
+    function setUnit(u) {
+        document.querySelectorAll('#ipe-unit [data-u]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-u') === u); });
+        $('ipe-price-l').textContent = u === 'kg' ? 'Prix de vente (€ / kg)' : 'Prix de vente (€ / unité)';
+        $('ipe-cost-l').textContent = u === 'kg' ? 'Prix d’achat (€ / kg)' : 'Prix d’achat (€ / unité)';
+        $('ipe-stock-l').textContent = u === 'kg' ? 'Stock (kg)' : 'Stock (unités)';
+    }
+    function cats(curCat) {
+        var L = []; try { L = JSON.parse(localStorage.getItem('covo_categories')) || []; } catch (e) {}
+        L = L.map(function (c) { return typeof c === 'string' ? c : (c && (c.name || c.label)) || ''; }).filter(Boolean);
+        if (curCat && L.indexOf(curCat) < 0) L.unshift(curCat);
+        $('ipe-cat').innerHTML = '<option value="">— Non classé —</option>' + L.map(function (c) { return '<option value="' + esc(c) + '"' + (c === curCat ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+    }
+    function open() { build(); $('ipe-modal').classList.add('open'); }
+    function close() { var m = $('ipe-modal'); if (m) m.classList.remove('open'); CUR = null; var pk = $('ipe-pick'); if (pk) pk.style.display = 'none'; }
+    function pick() {
+        open(); CUR = null;
+        $('ipe-title').firstChild.nodeValue = 'Produits du catalogue';
+        $('ipe-sub').textContent = 'Choisissez le produit à modifier';
+        $('ipe-pick').style.display = ''; $('ipe-form').style.display = 'none';
+        $('ipe-save').style.display = 'none'; $('ipe-back').style.display = 'none'; $('ipe-cancel').textContent = 'Fermer';
+        renderList();
+        setTimeout(function () { $('ipe-q').focus(); }, 40);
+    }
+    function renderList() {
+        var q = ($('ipe-q').value || '').toLowerCase().trim();
+        var L = load().filter(function (p) { return !q || [p.name, p.barcode, p.category].some(function (x) { return String(x || '').toLowerCase().indexOf(q) >= 0; }); })
+            .sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || ''), 'fr', { sensitivity: 'base' }); });
+        $('ipe-list').innerHTML = L.length ? L.slice(0, 200).map(function (p) {
+            var kg = p.unitType === 'kg', sp = +(kg ? (p.pricePerKg || p.price) : p.price) || 0;
+            return '<button type="button" data-id="' + esc(p.id) + '"><span>' + (kg ? '⚖️' : '📦') + '</span><span class="n">' + esc(p.name || 'Sans nom') + '<small>' + (p.category ? esc(p.category) + ' · ' : '') + 'stock ' + (+(+p.stock || 0).toFixed(3)) + (kg ? ' kg' : ' u.') + (p.barcode ? ' · #' + esc(p.barcode) : '') + '</small></span><span class="p">' + (sp ? eur(sp) + (kg ? '/kg' : '') : '—') + '</span></button>';
+        }).join('') + (L.length > 200 ? '<div class="info">… ' + (L.length - 200) + ' autres : affinez la recherche</div>' : '') : '<div class="info">Aucun produit ne correspond.</div>';
+    }
+    function edit(id, opt) {
+        opt = opt || {};
+        var p = load().find(function (x) { return String(x.id) === String(id); });
+        if (!p) { toast('Produit introuvable dans le catalogue', 'info'); return; }
+        open(); CUR = p.id;
+        var fromList = $('ipe-pick').style.display !== 'none' && $('ipe-modal').classList.contains('open') && !opt.price;
+        $('ipe-pick').style.display = 'none'; $('ipe-form').style.display = '';
+        $('ipe-save').style.display = ''; $('ipe-back').style.display = fromList ? '' : 'none'; $('ipe-cancel').textContent = 'Annuler';
+        $('ipe-title').firstChild.nodeValue = 'Modifier « ' + (p.name || 'produit') + ' »';
+        $('ipe-sub').textContent = (p.dateCreated ? 'Créé le ' + new Date(p.dateCreated).toLocaleDateString('fr-FR') + ' · ' : '') + 'modifications enregistrées dans le catalogue COVO';
+        var kg = p.unitType === 'kg';
+        $('ipe-name').value = p.name || '';
+        cats(p.category || '');
+        setUnit(kg ? 'kg' : 'unit');
+        $('ipe-price').value = fr(kg ? (p.pricePerKg != null ? p.pricePerKg : p.price) : p.price);
+        $('ipe-cost').value = fr(p.costPrice);
+        $('ipe-stock').value = fr(+p.stock || 0);
+        $('ipe-tva').value = fr(p.tvaRate);
+        $('ipe-bc').value = p.barcode || '';
+        if (opt.price > 0) { $('ipe-price').value = fr(Math.round(opt.price * 100) / 100); }
+        preview();
+        if (opt.price > 0) { $('ipe-price').focus(); $('ipe-price').select(); toast('🏷️ Nouveau prix proposé : vérifiez puis enregistrez', 'info'); }
+        else setTimeout(function () { $('ipe-name').focus(); }, 40);
+    }
+    function preview() {
+        var p = load().find(function (x) { return String(x.id) === String(CUR); }); if (!p) return;
+        var u = unit(), kg = u === 'kg', sp = num($('ipe-price').value), cp = num($('ipe-cost').value), stk = num($('ipe-stock').value);
+        var mg = sp > 0 && cp > 0 ? (sp - cp) / sp * 100 : null;
+        var buys = 0; try { buys = (JSON.parse(localStorage.getItem('covo_approvisionnements')) || []).filter(function (e) { return String(e.produitId) === String(p.id); }).length; } catch (e) {}
+        $('ipe-kpi').innerHTML = '<div><small>Marge</small><b style="color:' + (mg == null ? 'inherit' : mg < 0 ? '#dc2626' : mg < 15 ? '#d97706' : '#15803d') + ';">' + (mg == null ? '—' : Math.round(mg) + ' %') + '</b></div>'
+            + '<div><small>Coefficient</small><b>' + (sp > 0 && cp > 0 ? '×' + (sp / cp).toFixed(2).replace('.', ',') : '—') + '</b></div>'
+            + '<div><small>Achats liés</small><b>' + buys + '</b></div>';
+        var msgs = [], cls = '';
+        var oldKg = p.unitType === 'kg';
+        if (oldKg !== kg) { msgs.push('⚠️ Changement d’unité : le stock (' + fr(+p.stock || 0) + ') sera compté en ' + (kg ? 'kg' : 'unités') + '. Vérifiez la valeur du stock.'); cls = 'warn'; }
+        if (!isNaN(stk) && Math.abs(stk - (+p.stock || 0)) > 0.0005) msgs.push('📦 Stock corrigé : ' + fr(+p.stock || 0) + ' → ' + fr(stk) + (kg ? ' kg' : ' u.') + ' (tracé dans l’historique du produit).');
+        var bc = ($('ipe-bc').value || '').trim();
+        if (bc && load().some(function (x) { return String(x.id) !== String(p.id) && x.barcode && String(x.barcode).trim() === bc; })) { msgs.push('❌ Ce code-barres est déjà utilisé par un autre produit.'); cls = 'bad'; }
+        if (mg != null && mg < 0) { msgs.push('⚠️ Le prix de vente est inférieur au prix d’achat : vente à perte.'); if (!cls) cls = 'warn'; }
+        $('ipe-info').innerHTML = msgs.join('<br>'); $('ipe-info').className = 'info' + (cls ? ' ' + cls : '');
+    }
+    function save() {
+        var L = load(), i = L.findIndex(function (x) { return String(x.id) === String(CUR); });
+        if (i < 0) { toast('Produit introuvable', 'error'); return; }
+        var p = L[i], name = ($('ipe-name').value || '').trim(), u = unit(), kg = u === 'kg';
+        var sp = num($('ipe-price').value), cpRaw = ($('ipe-cost').value || '').trim(), cp = num(cpRaw), stk = num($('ipe-stock').value), tvaRaw = ($('ipe-tva').value || '').trim(), tva = num(tvaRaw);
+        var bc = ($('ipe-bc').value || '').trim();
+        if (!name) { toast('Le nom du produit est obligatoire', 'info'); $('ipe-name').focus(); return; }
+        if (isNaN(sp) || sp < 0) { toast('Prix de vente invalide', 'info'); $('ipe-price').focus(); return; }
+        if (cpRaw && (isNaN(cp) || cp < 0)) { toast('Prix d’achat invalide', 'info'); $('ipe-cost').focus(); return; }
+        if (isNaN(stk)) { toast('Stock invalide', 'info'); $('ipe-stock').focus(); return; }
+        if (tvaRaw && (isNaN(tva) || tva < 0 || tva > 100)) { toast('TVA invalide', 'info'); $('ipe-tva').focus(); return; }
+        if (bc && L.some(function (x) { return String(x.id) !== String(p.id) && x.barcode && String(x.barcode).trim() === bc; })) { toast('❌ Code-barres déjà utilisé par un autre produit', 'error'); return; }
+        if (!Array.isArray(p.stockHistory)) p.stockHistory = [];
+        var now = new Date().toISOString(), who = user(), changes = [];
+        function hist(field, oldV, newV, label) { p.stockHistory.push({ date: now, type: 'info', before: null, after: null, delta: 0, reason: label, user: who, meta: { source: 'investissement_pro', field: field, old: oldV, new: newV } }); }
+        var oldKg = p.unitType === 'kg', oldSp = +(oldKg ? (p.pricePerKg != null ? p.pricePerKg : p.price) : p.price) || 0;
+        if ((p.name || '') !== name) { hist('name', p.name, name, 'Nom : « ' + (p.name || '') + ' » → « ' + name + ' »'); changes.push('nom'); p.name = name; }
+        var cat = $('ipe-cat').value || '';
+        if ((p.category || '') !== cat) { hist('category', p.category, cat, 'Catégorie : ' + (p.category || '—') + ' → ' + (cat || '—')); changes.push('catégorie'); p.category = cat; }
+        if (oldKg !== kg) { hist('unitType', p.unitType, u, 'Vente ' + (oldKg ? 'au kg' : 'à l’unité') + ' → ' + (kg ? 'au kg' : 'à l’unité')); changes.push('unité'); p.unitType = u; }
+        if (kg) { p.pricePerKg = sp; p.price = null; } else { p.price = sp; if (oldKg) p.pricePerKg = null; }
+        if (Math.abs(oldSp - sp) > 0.004 || oldKg !== kg) { hist('price', oldSp, sp, 'Prix de vente ' + oldSp.toFixed(2) + ' € → ' + sp.toFixed(2) + ' €' + (kg ? '/kg' : '')); changes.push('prix de vente'); }
+        var newCp = cpRaw ? cp : null;
+        if ((p.costPrice == null || p.costPrice === '' ? null : +p.costPrice) !== newCp) { hist('costPrice', p.costPrice, newCp, 'Prix d’achat ' + (p.costPrice != null && p.costPrice !== '' ? (+p.costPrice).toFixed(3) : '—') + ' € → ' + (newCp != null ? newCp.toFixed(3) : '—') + ' €'); changes.push('prix d’achat'); p.costPrice = newCp; }
+        var oldStock = +p.stock || 0;
+        if (Math.abs(oldStock - stk) > 0.0005) {
+            var after = +stk.toFixed(kg ? 3 : 2);
+            p.stockHistory.push({ date: now, type: 'ajustement', before: oldStock, after: after, delta: +(after - oldStock).toFixed(3), reason: 'Correction du stock (Approvisionnement Pro)', user: who, meta: { source: 'investissement_pro', field: 'stock' } });
+            p.stock = after; changes.push('stock');
+        }
+        var newTva = tvaRaw ? tva : null, oldTva = p.tvaRate == null || p.tvaRate === '' ? null : +p.tvaRate;
+        if (oldTva !== newTva) { hist('tvaRate', oldTva, newTva, 'TVA ' + (oldTva != null ? oldTva + ' %' : '—') + ' → ' + (newTva != null ? newTva + ' %' : '—')); changes.push('TVA'); if (newTva == null) delete p.tvaRate; else p.tvaRate = newTva; }
+        if ((p.barcode || '') !== bc) { hist('barcode', p.barcode, bc, 'Code-barres : ' + (p.barcode || '—') + ' → ' + (bc || '—')); changes.push('code-barres'); p.barcode = bc; }
+        if (!changes.length) { toast('Aucune modification', 'info'); close(); return; }
+        if (p.stockHistory.length > 500) p.stockHistory = p.stockHistory.slice(-500);
+        p.dateModified = now;
+        L[i] = p;
+        localStorage.setItem('covo_products', JSON.stringify(L));
+        if (typeof cpDriveMarkDirty === 'function') cpDriveMarkDirty();
+        close();
+        refresh(p);
+        toast('✅ « ' + p.name + ' » mis à jour : ' + changes.join(', '));
+    }
+    /* rafraîchit les écrans ouverts après modification */
+    function refresh(p) {
+        try {
+            var sel = $('inv-m-produit');
+            if (sel && typeof window.invMPopulateProductSelect === 'function') {
+                var keep = window._invMLinkedProductId;
+                window.invMPopulateProductSelect();
+                if (keep != null) sel.value = String(keep);
+                if (keep != null && String(keep) === String(p.id) && typeof _invMShowProductInfo === 'function') _invMShowProductInfo(p, false);
+            }
+        } catch (e) {}
+        try { if (typeof window._ivmRecap === 'function') window._ivmRecap(); } catch (e) {}
+        try { if (typeof window._iveRecap === 'function' && $('inv-edit-modal') && $('inv-edit-modal').style.display === 'flex') window._iveRecap(); } catch (e) {}
+        try { ['inv-add-modal', 'inv-edit-modal'].forEach(function (id) { var m = $(id); if (m && m.style.display !== 'none') m.dispatchEvent(new Event('change', { bubbles: false })); }); } catch (e) {}
+        try { if (typeof invRender === 'function') invRender(); } catch (e) {}
+    }
+    window.ipeOpen = function (id, opt) { build(); if (id == null) pick(); else edit(id, opt); };
+
+    /* ── Points d'entrée ── */
+    function addBtnNew() {
+        var info = $('inv-m-produit-info'); if (!info) return;
+        var b = $('ipe-btn-m');
+        if (!b) {
+            b = document.createElement('button'); b.type = 'button'; b.id = 'ipe-btn-m'; b.className = 'ipe-edit-btn';
+            b.textContent = '✏️ Modifier la fiche du produit';
+            b.onclick = function () { if (window._invMLinkedProductId != null) window.ipeOpen(window._invMLinkedProductId); };
+            info.parentNode.insertBefore(b, info.nextSibling);
+        }
+        var id = window._invMLinkedProductId, p = id != null ? load().find(function (x) { return String(x.id) === String(id); }) : null;
+        b.style.display = p ? '' : 'none';
+        if (p) b.textContent = '✏️ Modifier la fiche « ' + (p.name || 'produit') + ' »';
+    }
+    function addBtnEdit() {
+        var box = $('ive-link'); if (!box || box.querySelector('.ipe-edit-btn')) return;
+        var id = ($('inv-edit-id') || {}).value, e = null;
+        try { e = (JSON.parse(localStorage.getItem('covo_approvisionnements')) || []).find(function (x) { return x.id === id; }); } catch (er) {}
+        if (!e || e.produitId == null || !load().some(function (x) { return String(x.id) === String(e.produitId); })) return;
+        var b = document.createElement('button'); b.type = 'button'; b.className = 'ipe-edit-btn';
+        b.textContent = '✏️ Modifier la fiche produit (nom, prix, stock…)';
+        b.onclick = function () { window.ipeOpen(e.produitId); };
+        box.appendChild(b);
+    }
+    function addToolbar() {
+        if ($('ipe-tb')) return;
+        var anchor = $('inv-toggle-view') || $('inv-toggle-group'); if (!anchor) return;
+        var b = document.createElement('button'); b.type = 'button'; b.id = 'ipe-tb'; b.className = 'ivp-tog';
+        b.title = 'Modifier un produit du catalogue (nom, prix, stock, code-barres…)';
+        b.textContent = '🏷️ Produits';
+        b.onclick = function () { window.ipeOpen(null); };
+        anchor.parentNode.insertBefore(b, anchor);
+    }
+    function boot() {
+        if (!$('inv-add-modal') || !$('inv-edit-modal') || typeof window.invOpenAddModal !== 'function' || typeof window.invOpenEdit !== 'function') {
+            if ((boot.n = (boot.n || 0) + 1) < 200) setTimeout(boot, 300); return;
+        }
+        addToolbar();
+        var am = $('inv-add-modal'), t1 = null;
+        ['input', 'change', 'click'].forEach(function (ev) { am.addEventListener(ev, function () { clearTimeout(t1); t1 = setTimeout(addBtnNew, 80); }); });
+        ['invMProductSelect', 'invMBarcodeInput', 'invOpenAddModal', 'invCreateProductFromPurchase'].forEach(function (fn) {
+            var o = window[fn];
+            if (typeof o === 'function') window[fn] = function () { var r = o.apply(this, arguments); try { addBtnNew(); } catch (e) {} return r; };
+        });
+        var oe = window.invOpenEdit;
+        window.invOpenEdit = function () {
+            var r = oe.apply(this, arguments);
+            try {
+                addBtnEdit();
+                var box = $('ive-link');
+                if (box && !box._ipeObs) { box._ipeObs = new MutationObserver(function () { addBtnEdit(); }); box._ipeObs.observe(box, { childList: true }); }
+            } catch (e) {}
+            return r;
+        };
+        setTimeout(addToolbar, 1500);
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
