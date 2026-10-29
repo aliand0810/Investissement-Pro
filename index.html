@@ -5238,7 +5238,7 @@ window.cpMaybeShowInstallBanner = function(){
         var img = p.img && !/placehold/.test(p.img) ? '<img src="' + esc(p.img) + '" alt="" onerror="this.parentNode.textContent=\'📦\'">' : (kg ? '⚖️' : '📦');
         var chips = '<span class="' + (kg ? 'kg' : '') + '">' + (kg ? '⚖️ Vendu au kg' : '🔢 À l’unité') + '</span>'
             + (p.category ? '<span>📂 ' + esc(p.category) + '</span>' : '')
-            + (+p.promo > 0 ? '<span class="promo">−' + (+p.promo) + ' % promo</span>' : '')
+            + (+p.promo > 0 ? (function () { var b = sp, c = parseFloat(p.costPrice), pc = +p.promo, n = (!isNaN(c) && c >= 0 && c < b) ? b - pc / 100 * (b - c) : b * (1 - pc / 100); return '<span class="promo" title="Prix promo ' + eur(n) + '">−' + (b > 0 && n < b ? Math.max(1, Math.round((1 - n / b) * 100)) : Math.round(pc)) + ' % promo</span>'; })() : '')
             + (p.active === false ? '<span class="off">Inactif</span>' : '');
         var dlc = '';
         if (p.expiryDate) { var dd = Math.ceil((new Date(String(p.expiryDate).slice(0, 10) + 'T00:00:00') - new Date(new Date().toDateString())) / 864e5); dlc = dFr(String(p.expiryDate).slice(0, 10), { day: '2-digit', month: 'short', year: '2-digit' }) + (dd < 0 ? ' (dépassée)' : dd <= 7 ? ' (' + dd + ' j)' : ''); }
